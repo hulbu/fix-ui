@@ -54,15 +54,21 @@ a dumb file writer. After changing UI, the agent asks for eyes:
 agent                bridge                    page (embed/extension)
   │ request_review ──▶ hold the call open
   │                    └─▶ SSE: "review requested: hero section"
-  │                                   │  banner appears on the live page;
-  │                                   │  human clicks around, drops picker
-  │                                   │  notes, presses Approve /
+  │                                   │  the plugin ACTIVATES ITSELF:
+  │                                   │  review banner + armed picker —
+  │                                   │  the human never hunts for the
+  │                                   │  chip. They click around, drop
+  │                                   │  notes, press Approve /
   │                                   │  Request changes
   │                    ◀── verdict + entries
   │ ◀── tool result: { verdict, entries[], durationMs }
   ▼
 agent continues the SAME turn with the verdict in hand
 ```
+
+Agent-side activation is a hard requirement, symmetric with the
+user-initiated mode: the user's flow starts at the chip; the agent's flow
+starts at the tool call, and the page UI wakes up on its own.
 
 Tool shape:
 

@@ -29,14 +29,15 @@ agent calls request_review ◀──MCP─────┘
 you review on the live page, approve or request changes — same turn
 ```
 
-Three ways the human and the agent meet:
+Two activation directions, non-negotiable in every adapter:
 
-1. **You push** — picker notes accumulate in the inbox; a file-watcher (or
-   the `fix ui` ritual) brings the agent to them.
-2. **You command** — type `fix ui`; the agent drains the inbox.
-3. **The agent asks** — after changing UI, the agent calls the bridge's
-   `request_review` tool and *blocks* while you review on the live page.
-   Human-in-the-loop, initiated by the machine.
+- **User-initiated (as the prototype works today):** you press the chip,
+  pick elements, write notes — then the agent solves them, either because
+  you say `fix ui` or because a file-watcher wakes it.
+- **Agent-initiated:** the agent calls `request_review` and the plugin
+  **activates itself** on the page — review banner up, picker armed, no
+  hunting for the chip. The agent blocks until you approve or request
+  changes. Human-in-the-loop, started by the machine.
 
 ## Architecture (one core, two adapters, one bridge)
 
