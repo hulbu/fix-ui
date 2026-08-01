@@ -42,6 +42,12 @@ Rules:
   opt-in flag producing an element-cropped image stored *next to* the
   inbox (`.fix-ui/img/<id>.png`) and referenced by path — never inlined
   base64 in the JSONL (token cost, file bloat).
+- `project` (optional, wire-only): absolute path of the target project
+  directory. Set by the embed's `initFixUi({ project })` or the
+  extension's origin→project map; absent → the bridge falls back to its
+  own cwd. The bridge routes on it and strips it before writing — the
+  inbox's location already encodes it. App-provided endpoints
+  (bridge-less embed) just ignore it.
 - Unknown fields must be preserved by the bridge (forward compatibility);
   `v` gates breaking changes.
 - The prototype's format (hulbu `tools/ui-feedback`) is v0: identical minus

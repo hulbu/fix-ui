@@ -1,7 +1,11 @@
 # fix-ui — design
 
 2026-07-31 · status: approved design, not yet built. Extracted from the
-working prototype in `hulbu/tools/ui-feedback`.
+working prototype in `hulbu/tools/ui-feedback` (`src/core.ts` picker +
+entry schema, `src/dom.ts` selector builder + React component detection,
+`src/dom.test.ts` its suite; reference sink:
+`website/src/app/api/ui-feedback/route.ts`). The docs are self-sufficient
+— the prototype is provenance and reusable code, not required reading.
 
 ## Goals
 
@@ -67,19 +71,31 @@ tab is being debugged" banner — documented as a possible v2 mode, not v1.
 
 ### `fixui-bridge`
 
-What it does: single local daemon.
+What it does: single local daemon, loopback-only, default
+`http://127.0.0.1:3499`.
 - HTTP: `POST /entries` (create), `GET /entries` (list), `DELETE
-  /entries/:id` — same shape the prototype's Next.js route exposes today,
-  so the embed can also run bridge-less against an app-provided endpoint.
+  /entries/:id` — same shape the prototype's Next.js route exposes today
+  (the bridge also accepts the prototype's body-style `DELETE /entries`
+  `{ id }`, so one transport client works bridge-less against an
+  app-provided endpoint). Plus the review channel: `GET /events` (SSE to
+  adapters) and `POST /reviews/:id/verdict` — spec in
+  agent-integration.md.
 - Storage: appends to `.fix-ui.jsonl` in the target project directory
-  (per-project routing by a `project` field or the bridge's cwd).
+  (per-project routing by the wire-level `project` field — see
+  capture-format.md — or the bridge's cwd).
 - MCP server for agents: see agent-integration.md.
 - Review broker: holds pending `request_review` calls open and pairs them
-  with a connected adapter (SSE/WebSocket to the page) — the
-  human-in-the-loop channel.
+  with a connected adapter over SSE (one-way push is all it needs —
+  verdicts return as plain POSTs) — the human-in-the-loop channel.
 
-Depends on: node stdlib + an MCP SDK. No database; the JSONL file is the
-queue and the audit log.
+One daemon, many projects: the first `fixui-bridge` binds :3499 and owns
+the inbox files; later instances (each Claude Code session spawns its own
+via stdio MCP) detect the bound port and proxy to it, scoping their MCP
+calls to their own cwd's project.
+
+Depends on: node stdlib + an MCP SDK. No database; the inbox JSONL is the
+queue (resolved entries are removed, no tombstones — reviews get their
+own append-only record, see capture-format.md).
 
 ## Picking mechanics — lessons the prototype paid for
 
@@ -123,8 +139,9 @@ These are requirements, not trivia; each one shipped as a fix in
 
 ## Testing
 
-- Core: unit tests for selector building (the prototype's suite moves
-  here), picker state machine, ring buffer.
+- Core: unit tests for selector building (the prototype's suite —
+  `tools/ui-feedback/src/dom.test.ts` — moves here), picker state
+  machine, ring buffer.
 - Adapters: Playwright against fixture pages — including a modal-dialog
   fixture asserting the re-homing behavior (pick inside an open modal;
   assert the page's button did NOT activate).

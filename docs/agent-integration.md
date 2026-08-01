@@ -40,7 +40,9 @@ participate; everything else is convenience:
   - A **`/loop`** or scheduled check — poll-based, coarser, works
     everywhere.
 - **MCP tools** (nicety over the same data): `list_feedback()`,
-  `resolve_feedback(id)` — structured access without paths, plus
+  `resolve_feedback(id)` (same effect as `DELETE /entries/:id` — the
+  entry leaves the inbox, no tombstone) — structured access without
+  paths, plus
   `feedback/updated` notifications for clients that surface them. The
   notification does not start a turn (see the one fact); it only helps
   harnesses that choose to react.
@@ -98,15 +100,31 @@ Engineering notes:
   while one is pending fails fast with a `busy` tool error — not a verdict
   (scope discipline; queues are v2).
 
+The adapter side of the channel (bridge HTTP, consumed by embed and
+extension alike):
+
+- `GET /events?project=<dir>` — SSE (`project` optional, same fallback as
+  entries: the bridge's cwd). Events: `review-requested` `{ reviewId,
+  prompt, url?, timeoutSeconds }` — the plugin activates itself, banner up,
+  picker armed, navigating/anchoring to `url` when given — and
+  `review-cancelled` `{ reviewId }` (timeout or agent abort; stand the
+  banner down). Comment-line heartbeats every 15s keep the stream alive
+  through intermediaries.
+- Notes dropped during a review are ordinary `POST /entries`; the page
+  tracks the ids it created.
+- `POST /reviews/:reviewId/verdict` `{ verdict: "approved" | "changes",
+  entryIds }` — resolves the held MCP call and appends the session record
+  (see capture-format.md).
+
 ## Claude Code specifics
 
 - Bridge registers as a local MCP server (`claude mcp add fixui -- npx
   fixui-bridge`), exposing: `list_feedback`, `resolve_feedback`,
   `request_review`.
 - The inbox path follows the project: bridge resolves the target project
-  from the adapter's `project` field (the embed defaults it to its own
-  origin's configured project; the extension's options page maps origins
-  to project directories).
+  from the adapter's wire-level `project` field (the embed passes
+  `initFixUi({ project })` when set; the extension's options page maps
+  origins to project directories; absent → the bridge's cwd).
 - Suggested CLAUDE.md line for consuming projects: `"fix ui" → read
   .fix-ui.jsonl (or fixui list_feedback) and fix entries; after UI work,
   call request_review before claiming done.`
