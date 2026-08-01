@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fix-ui e2e — modal</title>
+    <style>
+      body {
+        font: 16px/1.5 system-ui, sans-serif;
+        margin: 0;
+        padding: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        border-radius: 8px;
+        border: 1px solid #0003;
+        background: #f4f4f5;
+        cursor: pointer;
+      }
+      dialog {
+        border: 1px solid #0003;
+        border-radius: 14px;
+        padding: 20px;
+        min-width: 320px;
+      }
+      dialog::backdrop {
+        background: #0006;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">Modal fixture</h1>
+    <button id="open-modal">Open settings</button>
+
+    <dialog id="modal-dialog">
+      <h2 id="modal-title">Settings</h2>
+      <p>Increments: <span id="count">0</span></p>
+      <button class="counter-btn">Increment</button>
+      <button class="close-btn">Close</button>
+    </dialog>
+
+    <script src="/fixui.js"></script>
+    <script>
+      // Everything the page does runs from ONE capture-phase listener on
+      // `document` — the hard case the picker was built against. A picker
+      // listening on `document` (or in the bubble phase) would lose every race
+      // in here: the modal would open, the counter would increment, and the
+      // pick would never happen.
+      const dialog = document.getElementById("modal-dialog");
+      const count = document.getElementById("count");
+
+      document.addEventListener(
+        "click",
+        (event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          if (target.closest("#open-modal")) dialog.showModal();
+          if (target.closest(".close-btn")) dialog.close();
+          if (target.closest(".counter-btn")) {
+            count.textContent = String(Number(count.textContent) + 1);
+          }
+        },
+        true,
+      );
+
+      const params = new URLSearchParams(location.search);
+      const bridgeUrl = params.get("bridge");
+      if (bridgeUrl) {
+        window.fixui = FixUi.initFixUi({
+          bridgeUrl,
+          project: params.get("project") ?? undefined,
+        });
+      }
+    </script>
+  </body>
+</html>

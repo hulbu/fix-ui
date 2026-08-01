@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fix-ui e2e — pricing</title>
+    <style>
+      body {
+        font: 16px/1.5 system-ui, sans-serif;
+        margin: 0;
+        padding: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        border-radius: 8px;
+        border: 1px solid #0003;
+        background: #f4f4f5;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- A second page on the same origin: `request_review({url})` sends the
+         reviewer here, and the banner has to come back on arrival. -->
+    <h1 id="pricing-title">Pricing</h1>
+    <button id="upgrade-btn">Upgrade</button>
+
+    <script src="/fixui.js"></script>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const bridgeUrl = params.get("bridge");
+      if (bridgeUrl) {
+        window.fixui = FixUi.initFixUi({
+          bridgeUrl,
+          project: params.get("project") ?? undefined,
+        });
+      }
+    </script>
+  </body>
+</html>

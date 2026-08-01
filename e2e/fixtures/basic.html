@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fix-ui e2e — basic</title>
+    <style>
+      body {
+        font: 16px/1.5 system-ui, sans-serif;
+        margin: 0;
+        /* No scrollbar at the default viewport: the extension spec clicks the
+           picker chip by viewport coordinates (it lives in a closed shadow
+           root, where no selector can reach it). */
+        padding: 16px;
+      }
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        border-radius: 8px;
+        border: 1px solid #0003;
+        background: #f4f4f5;
+        cursor: pointer;
+      }
+      .pricing-card {
+        border: 1px solid #0002;
+        border-radius: 12px;
+        padding: 12px;
+        width: 220px;
+      }
+      .pricing-card h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">fix-ui e2e fixture</h1>
+
+    <section data-testid="toolbar">
+      <button id="save-btn" class="primary">Save</button>
+      <button id="cancel-btn" class="secondary">Cancel</button>
+      <button id="boom">Break something</button>
+    </section>
+
+    <p>Clicks: <span id="click-count">0</span></p>
+    <button id="count-btn">Count</button>
+
+    <div id="react-root"></div>
+
+    <script src="/react-app.js"></script>
+    <script src="/fixui.js"></script>
+    <script>
+      // The page's own console error — logged on demand, after the embed
+      // installed its console buffer, so a note taken later carries it.
+      document.getElementById("boom").addEventListener("click", () => {
+        console.error("PricingCard: failed to load pricing data");
+      });
+
+      const count = document.getElementById("click-count");
+      document.getElementById("count-btn").addEventListener("click", () => {
+        count.textContent = String(Number(count.textContent) + 1);
+      });
+
+      // Only when a bridge is named: the extension spec loads this same page
+      // with no query string and expects nothing but the page itself.
+      const params = new URLSearchParams(location.search);
+      const bridgeUrl = params.get("bridge");
+      if (bridgeUrl) {
+        window.fixui = FixUi.initFixUi({
+          bridgeUrl,
+          project: params.get("project") ?? undefined,
+        });
+      }
+    </script>
+  </body>
+</html>

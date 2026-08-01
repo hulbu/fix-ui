@@ -7,3 +7,7 @@ dist/
 .fix-ui.reviews.jsonl
 .superpowers/
 test-results/
+e2e/fixtures/fixui.js
+e2e/fixtures/react-app.js
+playwright-report/
+.playwright/

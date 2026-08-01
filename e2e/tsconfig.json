@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node", "chrome"]
+  },
+  "include": ["*.ts", "helpers/**/*.ts", "tests/**/*.ts", "fixtures/src/**/*.tsx"]
+}
