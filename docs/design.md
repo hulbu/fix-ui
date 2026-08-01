@@ -1,11 +1,13 @@
 # fix-ui — design
 
-2026-07-31 · status: approved design, not yet built. Extracted from the
-working prototype in `hulbu/tools/ui-feedback` (`src/core.ts` picker +
-entry schema, `src/dom.ts` selector builder + React component detection,
-`src/dom.test.ts` its suite; reference sink:
-`website/src/app/api/ui-feedback/route.ts`). The docs are self-sufficient
-— the prototype is provenance and reusable code, not required reading.
+2026-07-31 · status: **built, v1** — core, the npm embed, the Chrome
+extension and the bridge are implemented and tested (see the repo README
+for how to run them). Extracted from the working prototype in
+`hulbu/tools/ui-feedback` (`src/core.ts` picker + entry schema, `src/dom.ts`
+selector builder + React component detection, `src/dom.test.ts` its suite;
+reference sink: `website/src/app/api/ui-feedback/route.ts`). The docs are
+self-sufficient — the prototype is provenance and reusable code, not
+required reading.
 
 ## Goals
 
@@ -113,6 +115,14 @@ These are requirements, not trivia; each one shipped as a fix in
    (plain fixed elements — the dialog already paints in the top layer) and
    returns to `<body>`-with-popovers when it closes. A MutationObserver on
    dialogs' `open` attribute drives this with no user action.
+   **The trade-off, stated honestly:** while a modal is open the picker's
+   own UI lives in the page's light DOM, so page script can read it and
+   click it — the extension's closed shadow root buys no isolation in that
+   window. Working *is* the requirement here, so the mitigation is
+   narrower: the two decisions that must be a human's — a review verdict
+   and committing a note — require `isTrusted`, which script cannot forge.
+   Everything else the page could drive (opening the popover, moving the
+   highlight) costs nothing.
 3. **Capture at the window, not the document.** Pages register their own
    capture-phase handlers (e.g. a modal opener on `document`); whoever is
    closer to the root wins. Picker listeners go on `window` with capture.
@@ -125,13 +135,48 @@ These are requirements, not trivia; each one shipped as a fix in
    component name and trimmed element text so the agent can survive a
    selector gone stale.
 
+## Security
+
+The bridge is a loopback HTTP daemon with permissive CORS, and that is not
+an oversight: the embed runs on whatever origin the developer's app uses,
+and the extension injects into arbitrary sites, so there is no origin
+allowlist to write. The consequence has to be said out loud — **while the
+daemon runs, every page the developer visits can reach it**, and can write
+to and read from a project's `.fix-ui.jsonl`. Full model and operator
+advice: agent-integration.md "Privacy and trust". In this repo's terms:
+
+- **Loopback `Host` only** (403 otherwise). This is the DNS-rebinding
+  defence; CORS cannot be one.
+- **Caps at the boundary**: 256KB bodies (413), `note` ≤ 10000 and
+  `selector` ≤ 2000 characters (400) — the same numbers core enforces
+  before it will queue an entry, so the two never disagree.
+- **The review channel is token-gated.** `GET /events` and
+  `POST /reviews/:id/verdict` need the daemon's token (`?token=` or
+  `x-fixui-token`); 401 without it. Subscribing is how a page would learn a
+  `reviewId`, and a `reviewId` is enough to approve a review the human has
+  not seen — the token is what makes "human-in-the-loop" true rather than
+  aspirational. Generated per run (or `FIXUI_TOKEN`), printed on stderr,
+  written to `.fix-ui.token` in the daemon's cwd (gitignored) so local
+  adapters can pick it up out of band. `POST /reviews` stays open, because
+  a proxy instance in another project's cwd cannot read that file.
+- **Entries are untrusted input.** They are what somebody typed in a
+  browser, and the entries routes are open, so an agent must treat them as
+  a description of a UI complaint — never as instructions.
+- **The extension keeps its own queue.** A content script shares the
+  page's origin storage, so core's durable queue is handed
+  `chrome.storage.local` instead: otherwise a page could seed entries and
+  have the extension post them on the next toolbar click. The configured
+  project also overrides any `project` an entry carries — the destination
+  directory is the adapter's decision, not the data's.
+
 ## Error handling
 
-- Bridge unreachable → the adapter queues locally (memory + `localStorage`)
-  and retries with backoff; last resort copies the entry JSON to the
-  clipboard (prototype behavior, kept).
+- Bridge unreachable → the adapter queues locally (memory + `localStorage`,
+  or `chrome.storage` in the extension) and retries with backoff; last
+  resort copies the entry JSON to the clipboard (prototype behavior, kept).
 - Inbox file unwritable → bridge answers 500 with the path it tried; the
-  adapter surfaces the toast verbatim — no silent drops.
+  adapter surfaces the toast verbatim — no silent drops. "Bridge
+  unreachable" is reserved for a request that got no answer at all.
 - `request_review` with no adapter connected → immediate
   `{ verdict: "no-reviewer" }` so the agent isn't stuck.
 - Malformed entries → rejected at the schema boundary (core validates
@@ -148,7 +193,7 @@ These are requirements, not trivia; each one shipped as a fix in
 - Bridge: HTTP + MCP contract tests; a fake adapter for review-flow tests
   (request → notes → verdict round-trip, and the timeout path).
 
-## Monorepo shape (when building starts)
+## Monorepo shape
 
 ```
 fix-ui/
@@ -157,6 +202,7 @@ fix-ui/
 │   ├── embed/
 │   └── bridge/
 ├── extension/          # MV3, consumes core via the bundler
+├── e2e/                # Playwright: real Chromium, real bridge daemon
 └── docs/
 ```
 

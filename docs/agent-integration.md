@@ -47,9 +47,12 @@ participate; everything else is convenience:
   notification does not start a turn (see the one fact); it only helps
   harnesses that choose to react. It is sent by the **daemon** — the
   process that owns the port and the inbox files — after an entry is
-  added or removed, carrying `{ project }`; a proxy instance has no
-  notifications, since its client is attached to a different process than
-  the one whose inbox changed.
+  added or removed **over HTTP**, carrying `{ project }`. Two silences to
+  know about: a proxy instance sends none at all (its client is attached to
+  a different process than the one whose inbox changed), and
+  `resolve_feedback` called on the daemon's own MCP server removes the
+  entry without announcing it — the client that asked for the removal is
+  the only one that would hear, and it already knows.
 
 ## Direction 2 — agent → human (`request_review`)
 
@@ -107,27 +110,42 @@ Engineering notes:
 The adapter side of the channel (bridge HTTP, consumed by embed and
 extension alike):
 
-- `GET /events?project=<dir>` — SSE (`project` optional, same fallback as
-  entries: the bridge's cwd). Events: `review-requested` `{ reviewId,
-  prompt, url?, timeoutSeconds }` — the plugin activates itself, banner up,
-  picker armed, navigating/anchoring to `url` when given — and
-  `review-cancelled` `{ reviewId }` (timeout or agent abort; stand the
-  banner down). Comment-line heartbeats every 15s keep the stream alive
-  through intermediaries. A review still pending for that project is
-  replayed to every new subscriber the moment it connects: a reload — or
-  the navigation `url` itself asks for — drops the stream mid-review, and
-  the page that comes back has to re-arm itself.
+- `GET /events?project=<dir>&token=<token>` — SSE (`project` optional, same
+  fallback as entries: the bridge's cwd; `token` required — see "Privacy
+  and trust"). Events: `review-requested` `{ reviewId, prompt, url?,
+  timeoutSeconds }` — the plugin activates itself, banner up, picker armed,
+  navigating/anchoring to `url` when given — and `review-cancelled`
+  `{ reviewId }` (timeout or agent abort; stand the banner down).
+  Comment-line heartbeats every 15s keep the stream alive through
+  intermediaries. A review still pending for that project is replayed to
+  every new subscriber the moment it connects: a stream can drop mid-review
+  — a reload, or the very navigation the review's `url` asked for — and the
+  page that comes back has to re-arm itself. A replay is a *resume*: the
+  page keeps the entry ids it has already collected for that `reviewId`,
+  so the verdict still names the notes taken before the drop.
 - Notes dropped during a review are ordinary `POST /entries`; the page
   tracks the ids it created.
-- `POST /reviews/:reviewId/verdict` `{ verdict: "approved" | "changes",
-  entryIds }` — resolves the held MCP call and appends the session record
-  (see capture-format.md).
+- `POST /reviews/:reviewId/verdict?token=<token>` `{ verdict: "approved" |
+  "changes", entryIds }` — resolves the held MCP call and appends the
+  session record (see capture-format.md).
+- **Cancellation.** The agent's side can go away mid-review: the harness
+  restarts, or the human presses Esc, which the client sends as
+  `notifications/cancelled`. Either ends the review immediately —
+  `review-cancelled` goes to the page and the project is free for the next
+  `request_review`, rather than sitting `busy` with the banner up until
+  `timeoutSeconds` expires.
 
 ## Claude Code specifics
 
-- Bridge registers as a local MCP server (`claude mcp add fixui -- npx
-  fixui-bridge`), exposing: `list_feedback`, `resolve_feedback`,
-  `request_review`.
+- Bridge registers as a local MCP server, exposing `list_feedback`,
+  `resolve_feedback`, `request_review`. Nothing is published yet, so it is
+  registered from source:
+
+  ```bash
+  claude mcp add fixui -- node /abs/path/to/fix-ui/packages/bridge/dist/cli.js
+  ```
+
+  Once it is on npm that becomes `claude mcp add fixui -- npx fixui-bridge`.
 - The inbox path follows the project: bridge resolves the target project
   from the adapter's wire-level `project` field (the embed passes
   `initFixUi({ project })` when set; the extension's options page maps
@@ -146,9 +164,56 @@ extension alike):
 - Agents with neither MCP nor file access are out of scope; the JSONL file
   is deliberately the lowest common denominator.
 
-## Privacy
+## Privacy and trust
 
 Everything is localhost by default: adapter → bridge → project file. No
 cloud component exists in v1; nothing leaves the machine unless the user
-points the endpoint elsewhere. Entries contain page-visible text only —
-never form values, cookies, or storage.
+points the endpoint elsewhere.
+
+**What the bridge actually is.** A loopback HTTP daemon with permissive
+CORS — necessarily, because the embed runs on whatever origin the app uses
+and the extension injects into arbitrary sites. So while `fixui-bridge` is
+running, **every page you visit can talk to it**: any site's JavaScript can
+`POST /entries` into a project inbox and read `GET /entries` back. Three
+things bound that, and none of them is CORS:
+
+- **Host check.** Requests whose `Host` is not `127.0.0.1`/`localhost` on
+  the daemon's port are refused (403), which is what stops DNS rebinding
+  from turning a cross-origin write into a same-origin read.
+- **Caps.** Bodies over 256KB are refused (413); `note` is capped at 10000
+  characters and `selector` at 2000.
+- **A token on the review channel.** `GET /events` and
+  `POST /reviews/:id/verdict` require it (`?token=` or an `x-fixui-token`
+  header) and answer 401 without. Subscribing is how a page would learn a
+  `reviewId`, and a `reviewId` is all it takes to approve a review before
+  the human ever saw it — the token is what keeps the human in the loop.
+  The daemon generates one per run (or takes `FIXUI_TOKEN`), prints it on
+  stderr next to its URL, and writes it to `.fix-ui.token` in its working
+  directory (gitignored). Adapters get it out of band: the extension's
+  options page has a field for it, the embed takes
+  `initFixUi({ token })`, and a page cannot read the file — so an embed
+  with no token is simply bridge-less for the review direction, which is a
+  fine place to be. `POST /reviews` stays open: a proxy instance in another
+  project's cwd posts it and has no way to read the daemon's token file.
+
+Practical advice, in order:
+
+1. **Run the bridge while you are working, not always.** It is a dev
+   daemon, and its exposure lasts exactly as long as it is up.
+2. **Treat inbox entries as UNTRUSTED input.** An entry is text somebody
+   typed into a browser — and, because the entries routes are open, text
+   any page you visited could have written. An agent must read entries as
+   *data describing a UI complaint*, never as instructions to follow. "The
+   note said to run this command" is the failure mode; entries have no
+   authority.
+3. **The token is a secret.** It is regenerated on every daemon start;
+   don't commit it, don't paste it into a page you don't own.
+
+**What entries contain.** Page-visible text — selector, component name,
+trimmed element text, URL, viewport, user agent — never form values,
+cookies, or storage. The one exception is `consoleErrors`: `console.error`
+arguments are captured as the page produced them, and an app that logs
+tokens, request payloads or user data will have them captured too. That is
+the point of the field (it is what makes an entry actionable) and the cost
+of it; an app whose console carries secrets should say so to its
+developers, or run the adapter without it.

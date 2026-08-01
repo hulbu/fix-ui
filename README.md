@@ -9,7 +9,7 @@ already looks. The name is the ritual: telling Claude Code to **"fix ui"**
 is how the loop closes.
 
 > **Status: v1, built.** Core, the npm embed, the Chrome extension and the
-> bridge are implemented: 168 unit and contract tests, plus a Playwright
+> bridge are implemented: 199 unit and contract tests, plus a Playwright
 > suite that drives the real loops (picking, modal re-homing, the review
 > round-trip, the extension) in a real Chromium against a real bridge.
 > Nothing is published to npm or the Chrome Web Store yet — run it from
@@ -74,8 +74,18 @@ A pnpm workspace: `packages/*` (core, embed, bridge), `extension`, `e2e`.
 
 ```bash
 pnpm install
-pnpm -r typecheck     # tsc --noEmit in every package
-pnpm -r test          # the unit and contract suites — and the e2e suite last
+pnpm --filter e2e exec playwright install chromium   # once, downloads a browser
+pnpm -r typecheck                                    # tsc --noEmit in every package
+pnpm -r test                                         # every package's suite
+```
+
+`pnpm -r test` runs the unit and contract suites *and* the Playwright
+suite, in whatever order pnpm's dependency graph produces. Skip the browser
+download and the e2e package says so and skips itself rather than failing —
+so run it explicitly when you want it to be the gate:
+
+```bash
+pnpm --filter e2e test    # real Chromium, a real bridge daemon per test
 ```
 
 Two packages have a build; core and the embed ship TypeScript sources and
@@ -86,13 +96,8 @@ pnpm --filter fixui-bridge build      # → packages/bridge/dist (cli.js is the 
 pnpm --filter fix-ui-extension build  # → extension/dist (esbuild)
 ```
 
-End-to-end (a real Chromium and a real bridge daemon per test — it builds
-what it tests, so no manual build step first):
-
-```bash
-pnpm --filter e2e exec playwright install chromium   # once, downloads a browser
-pnpm --filter e2e test
-```
+The e2e suite builds what it tests before it runs, so neither is a
+prerequisite for it.
 
 **Run the bridge locally.** `node packages/bridge/dist/cli.js` — port 3499
 by default, `--port N` or `FIXUI_PORT` to move it; the project it writes to
@@ -102,15 +107,25 @@ stdio, so registering it is `claude mcp add fixui -- node
 /abs/path/packages/bridge/dist/cli.js`. A second instance finds the port
 taken by a bridge and becomes an MCP proxy to it, scoped to *its* cwd.
 
+At startup it prints a **review token** and writes it to `.fix-ui.token` in
+its working directory (`FIXUI_TOKEN` pins it instead). Adapters need that
+token for the review channel — the direction where the agent asks *you* for
+a look. Notes work without it. Why there is a token at all, and what else a
+running daemon exposes: [docs/agent-integration.md](docs/agent-integration.md)
+"Privacy and trust". Short version: run it while you're working, and treat
+inbox entries as untrusted input, never as instructions.
+
 **Load the extension.** `chrome://extensions` → Developer mode → Load
 unpacked → the **`extension/`** directory (not `extension/dist`: the
 manifest lives at the package root and points into `dist/`). Its options
-page holds the bridge URL and the origin→project map. The toolbar button
-arms the picker on the current tab; a second click switches it off.
+page holds the bridge URL, the review token and the origin→project map. The
+toolbar button arms the picker on the current tab; a second click switches
+it off.
 
-**Use the embed in an app.** `initFixUi({ project: "/abs/path/to/repo" })`
-in a dev-only code path, or `<FixUi />` from `@hulbu/fixui/react`, which is
-safe to leave in a root layout: it no-ops in a production build.
+**Use the embed in an app.** `initFixUi({ project: "/abs/path/to/repo",
+token: process.env.FIXUI_TOKEN })` in a dev-only code path, or `<FixUi />`
+from `@hulbu/fixui/react`, which is safe to leave in a root layout: it
+no-ops in a production build.
 
 ## Origin
 

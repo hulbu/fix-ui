@@ -34,10 +34,17 @@ time it's acted on.
 
 Rules:
 
+- `note` is capped at **10000** characters and `selector` at **2000**.
+  Adapters truncate on the way in; the bridge refuses anything longer with
+  a 400. Generous for anything a person types, and small enough that
+  nothing can use an inbox as storage.
 - `consoleErrors` is a **deduped ring buffer**: max 5 distinct errors, most
   recent last, each message ≤ 300 chars. Collected from `window.onerror`,
   `unhandledrejection`, and `console.error` wraps in the page world.
-  Warnings are not collected (noise).
+  Warnings are not collected (noise). Note the exception this is to
+  "page-visible text only": `console.error` arguments are captured as the
+  app produced them, so an app that logs tokens or payloads will have them
+  land in the inbox (see agent-integration.md "Privacy and trust").
 - Screenshots are **not** part of v1. When they arrive they will be an
   opt-in flag producing an element-cropped image stored *next to* the
   inbox (`.fix-ui/img/<id>.png`) and referenced by path — never inlined
@@ -47,7 +54,10 @@ Rules:
   extension's origin→project map; absent → the bridge falls back to its
   own cwd. The bridge routes on it and strips it before writing — the
   inbox's location already encodes it. App-provided endpoints
-  (bridge-less embed) just ignore it.
+  (bridge-less embed) just ignore it. When an adapter is configured with a
+  project, that value **overrides** whatever an entry carries: the
+  destination directory is the adapter's decision, and an entry can come
+  from a durable queue the adapter does not exclusively own.
 - Unknown fields must be preserved by the bridge (forward compatibility);
   `v` gates breaking changes.
 - The prototype's format (hulbu `tools/ui-feedback`) is v0: identical minus
