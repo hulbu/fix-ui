@@ -13,3 +13,15 @@ export {
   type ConsoleBufferOptions,
 } from "./console-buffer";
 export { createTransport, type Transport, type TransportOptions } from "./transport";
+export {
+  createPicker,
+  type Picker,
+  type PickerOptions,
+  type ReviewRequest,
+  type ReviewVerdict,
+} from "./picker";
+export {
+  connectReviewChannel,
+  type ReviewChannel,
+  type ReviewChannelOptions,
+} from "./review-channel";
