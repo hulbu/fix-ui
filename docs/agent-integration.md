@@ -195,6 +195,13 @@ things bound that, and none of them is CORS:
   with no token is simply bridge-less for the review direction, which is a
   fine place to be. `POST /reviews` stays open: a proxy instance in another
   project's cwd posts it and has no way to read the daemon's token file.
+  That also means any page can call it: it can raise a review banner on your
+  page carrying prompt text of its choosing — rendered as text, not HTML, so
+  it cannot inject markup, but aimed at you, the human — and hold the project
+  `busy` for up to the review timeout (default 600s), so your agent's own
+  `request_review` fails with `busy` until it expires. It cannot answer the
+  review: without the token it never receives `/events`, so it never learns
+  the `reviewId` a verdict needs. The human still decides.
 
 Practical advice, in order:
 
