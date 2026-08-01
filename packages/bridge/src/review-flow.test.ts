@@ -230,6 +230,42 @@ it("approve with no notes resolves {verdict:'approved',entries:[]}", async () =>
   expect((await body(again)).ok).toBe(false);
 
   expect((await reviewRecords(projectDir))[0]).toMatchObject({ verdict: "approved", entryIds: [] });
+
+  // Answering closes the agent's request too — that must not read as an abort.
+  await new Promise((done) => setTimeout(done, 100));
+  expect(stream.events.filter((event) => event.event === "review-cancelled")).toEqual([]);
+  expect(stream.events.filter((event) => event.event === "review-requested")).toHaveLength(1);
+});
+
+it("the agent hanging up ends the review: review-cancelled, and the project is free at once", async () => {
+  const stream = await openStream();
+
+  // The agent's held call, then the agent dies (Ctrl-C, harness restart).
+  const controller = new AbortController();
+  const abandoned = fetch(`${base}/reviews`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ prompt: "agent goes away", timeoutSeconds: 30 }),
+    signal: controller.signal,
+  });
+  held.push(abandoned.catch(() => undefined));
+  const { reviewId } = await stream.next("review-requested");
+  controller.abort();
+
+  await expect(abandoned).rejects.toThrow();
+  expect(await stream.next("review-cancelled")).toEqual({ reviewId });
+
+  // No 30-second wedge: the next review starts immediately instead of `busy`.
+  const next = requestReview({ prompt: "fresh start", timeoutSeconds: 5 });
+  const requested = await stream.next("review-requested", 2);
+  expect(requested.prompt).toBe("fresh start");
+  await postVerdict(requested.reviewId, { verdict: "approved", entryIds: [] });
+  expect((await body(await next)).verdict).toBe("approved");
+
+  // The abandoned call produced no outcome, so it left no audit line.
+  expect((await reviewRecords(projectDir)).map((record) => record.id)).toEqual([
+    requested.reviewId,
+  ]);
 });
 
 it("no subscriber → immediate no-reviewer; second concurrent review → 409 busy", async () => {
@@ -272,6 +308,18 @@ it("timeoutSeconds elapses → {verdict:'timeout'} and review-cancelled on the s
   expect(outcome.durationMs).toBeGreaterThanOrEqual(150);
 
   expect(await stream.next("review-cancelled")).toEqual({ reviewId });
+
+  // A timeout is an outcome, so it is in the audit trail by the time the agent
+  // hears about it (docs/capture-format.md "Review session records").
+  const records = await reviewRecords(projectDir);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({
+    id: reviewId,
+    prompt: "waiting for nobody",
+    verdict: "timeout",
+    entryIds: [],
+  });
+  expect(new Date(records[0]!.resolvedAt).toISOString()).toBe(records[0]!.resolvedAt);
 
   // The timed-out review is gone: its id no longer resolves, and the project is free.
   expect((await postVerdict(reviewId, { verdict: "approved", entryIds: [] })).status).toBe(404);

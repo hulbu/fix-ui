@@ -44,6 +44,13 @@ export interface ReviewRequest {
   prompt: string;
   url?: string;
   timeoutSeconds: number;
+  /**
+   * Aborts when the agent that asked for the review is gone (its HTTP call
+   * dropped, its harness restarted). The review ends there: nothing would ever
+   * read its outcome, and leaving it pending would wedge the project as `busy`
+   * — and leave the page's banner up — for the rest of the timeout.
+   */
+  signal?: AbortSignal;
 }
 
 export type ReviewEvent = "review-requested" | "review-cancelled";
@@ -121,12 +128,55 @@ export function createReviewBroker(): ReviewBroker {
     return undefined;
   }
 
-  function expire(review: Pending): void {
-    if (pending.get(review.project) !== review) return; // already settled
+  /**
+   * End a review no human verdict will ever reach, and stand the page's banner
+   * down — it has no other way to learn (docs/agent-integration.md:
+   * `review-cancelled` is "timeout or agent abort"). Identity, not id, is the
+   * guard: a review that already resolved is not this object any more, so a
+   * late abort signal is a no-op rather than somebody else's cancellation.
+   */
+  function endWithoutVerdict(review: Pending): boolean {
+    if (pending.get(review.project) !== review) return false;
     pending.delete(review.project);
-    review.settle({ verdict: "timeout", entries: [], durationMs: Date.now() - review.startedAt });
-    // Stand the page's review banner down; it has no other way to learn.
+    clearTimeout(review.timer);
     broadcast(review.project, "review-cancelled", { reviewId: review.id });
+    return true;
+  }
+
+  function timedOut(review: Pending): ReviewOutcome {
+    return { verdict: "timeout", entries: [], durationMs: Date.now() - review.startedAt };
+  }
+
+  function expire(review: Pending): void {
+    if (!endWithoutVerdict(review)) return;
+    // A timeout is an outcome, so it joins the audit trail — recorded before
+    // the agent is answered, the way a verdict is.
+    void recordTimeout(review);
+  }
+
+  async function recordTimeout(review: Pending): Promise<void> {
+    try {
+      await appendReview(review.project, {
+        id: review.id,
+        prompt: review.prompt,
+        verdict: "timeout",
+        entryIds: [],
+        requestedAt: review.requestedAt.toISOString(),
+        resolvedAt: new Date().toISOString(),
+      });
+    } catch {
+      // An unwritable audit file must not take the daemon down (and there is no
+      // request left to report it on) — the agent still gets its verdict below.
+    } finally {
+      review.settle(timedOut(review));
+    }
+  }
+
+  /** The agent hung up mid-review: no outcome was produced and nobody is left
+   *  to read one, so nothing is recorded. Settling only frees the held call. */
+  function abandon(review: Pending): void {
+    if (!endWithoutVerdict(review)) return;
+    review.settle(timedOut(review));
   }
 
   /** The full entries behind the ids the page reported, missing ones absent. */
@@ -186,6 +236,9 @@ export function createReviewBroker(): ReviewBroker {
         settle,
       };
       pending.set(request.project, review);
+      // `once`: the request's own signal dies with the request, and a late
+      // abort (the normal end of every answered call) finds nothing to end.
+      request.signal?.addEventListener("abort", () => abandon(review), { once: true });
       broadcast(request.project, "review-requested", requestedPayload(review));
       return held;
     },

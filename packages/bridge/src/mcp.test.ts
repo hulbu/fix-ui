@@ -10,6 +10,8 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +20,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, it } from "vitest";
 import { BusyError, type ReviewOutcome } from "./broker.js";
-import { createMcpServer, type ReviewTools } from "./mcp.js";
+import { createMcpServer, httpTools, type ReviewTools } from "./mcp.js";
 import { inboxPath } from "./storage.js";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
@@ -228,6 +230,30 @@ it("keeps a held request_review alive with progress notifications until it resol
   const seen = messages.length;
   await new Promise((done) => setTimeout(done, 100));
   expect(messages.length).toBe(seen);
+});
+
+it("fails a proxied call when the daemon dies mid-response instead of hanging", async () => {
+  // Headers, part of a body, then the daemon goes away. The proxy has no
+  // client-side deadline by design, so nothing else would ever settle these.
+  // Both deaths matter and they surface differently: a daemon that *exits*
+  // sends FIN and the request emits nothing at all — only the response does.
+  const stub = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" }); // chunked
+    res.write('{"entries":[');
+    if (req.url?.includes("reset")) res.socket!.destroy(); // RST
+    else setTimeout(() => res.socket!.end(), 20); // FIN, mid-body
+  });
+  await new Promise<void>((done) => stub.listen(0, "127.0.0.1", done));
+  const port = (stub.address() as AddressInfo).port;
+
+  const gone = httpTools(`http://127.0.0.1:${port}`, await tempProject());
+  const reset = httpTools(`http://127.0.0.1:${port}/reset`, await tempProject());
+
+  await expect(gone.listFeedback()).rejects.toThrow();
+  await expect(gone.requestReview({ prompt: "anyone?" })).rejects.toThrow();
+  await expect(reset.listFeedback()).rejects.toThrow();
+
+  await new Promise((done) => stub.close(done));
 });
 
 it("proxy mode: a second instance forwards its own project's tools to the running daemon", async () => {

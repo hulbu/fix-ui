@@ -336,6 +336,14 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     const project = resolveProject(body.project, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
+    // The agent can vanish while we hold its call — Ctrl-C, a harness restart,
+    // a dead proxy. Watch `res`, not `req`: a fully-read request stream closes
+    // the moment its body is consumed (above), while the response closes either
+    // when we answer or when the connection dies under us. Answering closes it
+    // too, so the broker ends only the review this request still owns.
+    const agentGone = new AbortController();
+    ctx.res.on("close", () => agentGone.abort());
+
     let outcome: ReviewOutcome;
     try {
       outcome = await broker.requestReview({
@@ -343,6 +351,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
         prompt: body.prompt,
         ...(typeof body.url === "string" ? { url: body.url } : {}),
         timeoutSeconds: timeout ?? DEFAULT_TIMEOUT_SECONDS,
+        signal: agentGone.signal,
       });
     } catch (cause) {
       if (!(cause instanceof BusyError)) throw cause;

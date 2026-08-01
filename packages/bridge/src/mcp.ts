@@ -318,6 +318,10 @@ function send(
         res.setEncoding("utf8");
         res.on("data", (chunk: string) => (text += chunk));
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
+        // Headers arrived, then the daemon died mid-body: with no client-side
+        // deadline by design, an unsettled promise here would hang forever.
+        res.on("aborted", () => reject(new Error("bridge daemon closed the connection")));
+        res.on("error", reject);
       },
     );
     req.on("error", reject);
