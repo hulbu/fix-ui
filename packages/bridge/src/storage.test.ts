@@ -128,6 +128,39 @@ describe("removeEntry", () => {
   });
 });
 
+describe("concurrent mutations", () => {
+  it("serializes writers so parallel removes never drop surviving entries", async () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    await Promise.all(ids.map((id) => appendEntry(projectDir, entry({ id }))));
+    expect((await listEntries(projectDir)).map((e) => e.id).sort()).toEqual(ids);
+
+    // Each remove is a read-modify-write: unserialized, they all read the same
+    // file and the last writer restores the entries the others removed.
+    await Promise.all(["a", "b", "c"].map((id) => removeEntry(projectDir, id)));
+
+    expect((await listEntries(projectDir)).map((e) => e.id)).toEqual(["d", "e", "f"]);
+  });
+
+  it("keeps an append that lands during a remove", async () => {
+    await appendEntry(projectDir, entry({ id: "victim" }));
+
+    await Promise.all([
+      appendEntry(projectDir, entry({ id: "fresh" })),
+      removeEntry(projectDir, "victim"),
+    ]);
+
+    expect((await listEntries(projectDir)).map((e) => e.id)).toEqual(["fresh"]);
+  });
+
+  it("keeps the queue moving after a failed mutation", async () => {
+    await mkdir(inboxPath(projectDir)); // every write against this path fails
+
+    await expect(appendEntry(projectDir, entry())).rejects.toThrow(InboxError);
+    // A rejected predecessor must not wedge the file's chain forever.
+    await expect(appendEntry(projectDir, entry())).rejects.toThrow(InboxError);
+  });
+});
+
 describe("appendReview", () => {
   it("appends session records to <project>/.fix-ui.reviews.jsonl", async () => {
     await appendReview(projectDir, { id: "r1", verdict: "approved", entryIds: ["a"] });

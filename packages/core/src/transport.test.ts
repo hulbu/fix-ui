@@ -281,6 +281,37 @@ describe("createTransport", () => {
     expect(bodyOf(fetchImpl.mock.calls[1]!).project).toBe("/Users/me/other");
   });
 
+  it("carries project on list() and remove() so reads and deletes hit the same inbox", async () => {
+    const fetchImpl = okFetch();
+    const transport = make({
+      endpoint: ENDPOINT,
+      project: "/Users/me/my app",
+      fetchImpl,
+      storage: createFakeStorage(),
+    });
+
+    await transport.list();
+    expect(fetchImpl.mock.calls[0]![0]).toBe(`${ENDPOINT}?project=%2FUsers%2Fme%2Fmy%20app`);
+    expect(fetchImpl.mock.calls[0]![1]?.headers).toBeUndefined(); // still no preflight
+
+    await transport.remove("entry-1");
+    expect(bodyOf(fetchImpl.mock.calls[1]!)).toEqual({
+      id: "entry-1",
+      project: "/Users/me/my app",
+    });
+  });
+
+  it("leaves list() and remove() unqualified when no project is configured", async () => {
+    const fetchImpl = okFetch({ entries: [] });
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage: createFakeStorage() });
+
+    await transport.list();
+    expect(fetchImpl.mock.calls[0]![0]).toBe(ENDPOINT);
+
+    await transport.remove("entry-1");
+    expect(bodyOf(fetchImpl.mock.calls[1]!)).toEqual({ id: "entry-1" });
+  });
+
   it("restores the queue from storage on construction, deduping by id", async () => {
     const a = makeEntry({ id: "a" });
     const b = makeEntry({ id: "b" });

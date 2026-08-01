@@ -174,6 +174,57 @@ it("DELETE /entries/:id and body-style DELETE /entries {id} both remove the line
   expect(await readFile(inboxPath(otherDir), "utf8")).toBe("");
 });
 
+it("body-style DELETE routes on the body's project", async () => {
+  await post(sampleEntry({ id: "keep" }));
+  await post(sampleEntry({ id: "gone", project: otherDir }));
+
+  const res = await fetch(`${base}/entries`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ id: "gone", project: otherDir }),
+  });
+
+  expect(res.status).toBe(200);
+  expect(await readFile(inboxPath(otherDir), "utf8")).toBe("");
+  expect((await storedLines(projectDir)).map((e) => e.id)).toEqual(["keep"]); // untouched
+
+  const invalid = await fetch(`${base}/entries`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ id: "keep", project: "relative/path" }),
+  });
+  expect(invalid.status).toBe(400);
+  expect((await storedLines(projectDir)).map((e) => e.id)).toEqual(["keep"]);
+});
+
+it("serializes concurrent writes to one inbox", async () => {
+  const ids = ["a", "b", "c", "d", "e", "f"];
+  for (const id of ids) await post(sampleEntry({ id }));
+
+  const deletes = await Promise.all(
+    ["a", "b", "c"].map((id) => fetch(`${base}/entries/${id}`, { method: "DELETE" })),
+  );
+
+  for (const res of deletes) expect(res.status).toBe(200);
+  expect((await storedLines(projectDir)).map((e) => e.id)).toEqual(["d", "e", "f"]);
+
+  // A create racing a delete: neither may lose the other's work.
+  for (let round = 0; round < 10; round++) {
+    const victim = `victim-${round}`;
+    const fresh = `fresh-${round}`;
+    await post(sampleEntry({ id: victim }));
+
+    await Promise.all([
+      post(sampleEntry({ id: fresh })),
+      fetch(`${base}/entries/${victim}`, { method: "DELETE" }),
+    ]);
+
+    const stored = (await storedLines(projectDir)).map((e) => e.id);
+    expect(stored).toContain(fresh);
+    expect(stored).not.toContain(victim);
+  }
+});
+
 it("rejects entries without note/selector with 400 {ok:false}", async () => {
   const bad: unknown[] = [
     sampleEntry({ note: undefined }),

@@ -61,10 +61,18 @@ export function createTransport(opts: TransportOptions): Transport {
   let notified = 0;
   let destroyed = false;
 
-  function request(init: RequestInit): Promise<Response> {
+  function request(init: RequestInit, url: string = opts.endpoint): Promise<Response> {
     const impl = opts.fetchImpl ?? globalThis.fetch;
     if (typeof impl !== "function") return Promise.reject(new Error("no fetch implementation"));
-    return impl(opts.endpoint, init);
+    return impl(url, init);
+  }
+
+  /** Reads must name the same project the writes do, or the panel lists (and
+   *  deletes from) the bridge's own cwd while entries land somewhere else. */
+  function listUrl(): string {
+    if (!opts.project) return opts.endpoint;
+    const separator = opts.endpoint.includes("?") ? "&" : "?";
+    return `${opts.endpoint}${separator}project=${encodeURIComponent(opts.project)}`;
   }
 
   function restore(): QueuedEntry[] {
@@ -206,7 +214,7 @@ export function createTransport(opts: TransportOptions): Transport {
     async list() {
       try {
         // No content-type on the GET: it would force a CORS preflight for nothing.
-        const res = await request({ method: "GET" });
+        const res = await request({ method: "GET" }, listUrl());
         if (!res.ok) return [];
         const body: unknown = await res.json();
         const entries = Array.isArray(body)
@@ -219,8 +227,10 @@ export function createTransport(opts: TransportOptions): Transport {
     },
 
     async remove(id) {
+      // The bridge routes the delete on the same wire-level project as create.
+      const payload = opts.project ? { id, project: opts.project } : { id };
       try {
-        const res = await request({ method: "DELETE", headers: JSON_HEADERS, body: JSON.stringify({ id }) });
+        const res = await request({ method: "DELETE", headers: JSON_HEADERS, body: JSON.stringify(payload) });
         if (!res.ok) return false;
         const body: unknown = await res.json().catch(() => null);
         return (body as { ok?: unknown } | null)?.ok !== false;

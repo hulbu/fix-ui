@@ -249,11 +249,14 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   api.route("DELETE", "/entries", async (ctx) => {
     const body = await readJsonRecord(ctx.req);
     const id = body?.id;
-    if (typeof id !== "string" && typeof id !== "number") {
+    if (!body || (typeof id !== "string" && typeof id !== "number")) {
       return ctx.json(400, { ok: false, error: "delete requires an id" });
     }
 
-    const project = projectFromQuery(ctx);
+    // The client carries `project` in the body here, the way it does on create;
+    // the query string is the fallback so curl-style deletes work too.
+    const requested = body.project ?? ctx.url.searchParams.get("project");
+    const project = resolveProject(requested, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
     await removeEntry(project, String(id));

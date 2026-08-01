@@ -60,12 +60,36 @@ export function resolveProject(requested: unknown, fallback: string): string | n
   }
 }
 
-async function appendLine(file: string, record: JsonRecord): Promise<void> {
-  try {
-    await appendFile(file, `${JSON.stringify(record)}\n`);
-  } catch (cause) {
-    throw new InboxError("write", file, cause);
-  }
+/**
+ * One operation at a time per file. `removeEntry` is a read-modify-write, so
+ * without this two parallel deletes both read the same inbox, each drops its
+ * own id and the later write restores the other's entry — and an append landing
+ * mid-rewrite is truncated away. Reads queue too, so nobody sees a torn file.
+ * Queued work must never call back into these functions for the same file.
+ */
+const chains = new Map<string, Promise<void>>();
+
+function serialize<T>(file: string, work: () => Promise<T>): Promise<T> {
+  const result = (chains.get(file) ?? Promise.resolve()).then(work);
+  const settled = result.then(
+    () => undefined,
+    () => undefined, // a failed operation must not wedge the file's queue
+  );
+  chains.set(file, settled);
+  void settled.then(() => {
+    if (chains.get(file) === settled) chains.delete(file); // idle files leave no trace
+  });
+  return result;
+}
+
+function appendLine(file: string, record: JsonRecord): Promise<void> {
+  return serialize(file, async () => {
+    try {
+      await appendFile(file, `${JSON.stringify(record)}\n`);
+    } catch (cause) {
+      throw new InboxError("write", file, cause);
+    }
+  });
 }
 
 async function readLines(file: string): Promise<string[]> {
@@ -92,9 +116,14 @@ export async function appendEntry(projectDir: string, entry: JsonRecord): Promis
   return stored;
 }
 
-export async function listEntries(projectDir: string): Promise<JsonRecord[]> {
+export function listEntries(projectDir: string): Promise<JsonRecord[]> {
+  const file = inboxPath(projectDir);
+  return serialize(file, () => readEntries(file));
+}
+
+async function readEntries(file: string): Promise<JsonRecord[]> {
   const entries: JsonRecord[] = [];
-  for (const line of await readLines(inboxPath(projectDir))) {
+  for (const line of await readLines(file)) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -110,19 +139,22 @@ export async function listEntries(projectDir: string): Promise<JsonRecord[]> {
 
 /** Rewrite the inbox without `id`. Reports whether anything was removed; an
  *  unknown id leaves the file untouched (and never creates one). */
-export async function removeEntry(projectDir: string, id: string): Promise<boolean> {
+export function removeEntry(projectDir: string, id: string): Promise<boolean> {
   const file = inboxPath(projectDir);
-  const entries = await listEntries(projectDir);
-  const remaining = entries.filter((entry) => entry.id !== id);
-  if (remaining.length === entries.length) return false;
+  // Read and rewrite as one turn: nothing else touches this file in between.
+  return serialize(file, async () => {
+    const entries = await readEntries(file);
+    const remaining = entries.filter((entry) => entry.id !== id);
+    if (remaining.length === entries.length) return false;
 
-  const body = remaining.map((entry) => JSON.stringify(entry)).join("\n");
-  try {
-    await writeFile(file, remaining.length > 0 ? `${body}\n` : "");
-  } catch (cause) {
-    throw new InboxError("write", file, cause);
-  }
-  return true;
+    const body = remaining.map((entry) => JSON.stringify(entry)).join("\n");
+    try {
+      await writeFile(file, remaining.length > 0 ? `${body}\n` : "");
+    } catch (cause) {
+      throw new InboxError("write", file, cause);
+    }
+    return true;
+  });
 }
 
 /** Append-only audit trail of review sessions (docs/capture-format.md). */
