@@ -6,8 +6,10 @@ import { validateEntry, type FeedbackEntry } from "./entry";
  *
  * Error handling (docs/design.md): a failed create is queued in memory and in
  * storage, retried with exponential backoff; after MAX_ATTEMPTS failed flushes
- * the entry goes to the clipboard as a last resort and leaves the queue. With
- * no clipboard configured there is no last resort, so it keeps retrying.
+ * entries go to the clipboard as a last resort and leave the queue — everything
+ * that expires in the same round travels as ONE payload, JSONL so it can be
+ * pasted straight into a `.fix-ui.jsonl` inbox. With no clipboard configured
+ * there is no last resort, so it keeps retrying instead of dropping anything.
  */
 const QUEUE_KEY = "fixui.queue.v1";
 const BASE_DELAY_MS = 1000;
@@ -27,6 +29,7 @@ export interface TransportOptions {
 }
 
 export interface Transport {
+  /** Malformed entries are rejected outright: `{ok:false,queued:false}`, nothing sent. */
   create(entry: FeedbackEntry): Promise<{ ok: boolean; queued: boolean }>;
   list(): Promise<FeedbackEntry[]>;
   /** Body-style DELETE {id} — works against the bridge AND prototype-style app routes. */
@@ -129,7 +132,10 @@ export function createTransport(opts: TransportOptions): Transport {
   }
 
   async function drainQueue(): Promise<void> {
+    const { clipboard } = opts;
+    const expired: QueuedEntry[] = [];
     let delivered = false;
+
     for (const item of [...queue]) {
       if (destroyed) break; // stop sending, but still persist what's left
       if (await post(item.entry)) {
@@ -138,13 +144,17 @@ export function createTransport(opts: TransportOptions): Transport {
         continue;
       }
       item.attempts += 1;
-      if (item.attempts >= MAX_ATTEMPTS && opts.clipboard) {
-        try {
-          await opts.clipboard(JSON.stringify(item.entry));
-          queue = queue.filter((queued) => queued !== item);
-        } catch {
-          // Clipboard refused (no user activation?) — keep the entry queued.
-        }
+      if (item.attempts >= MAX_ATTEMPTS && clipboard) expired.push(item);
+    }
+
+    // One payload for the whole round — writing per entry would have each copy
+    // overwrite the last, dropping everything but the final entry.
+    if (expired.length > 0 && clipboard) {
+      try {
+        await clipboard(expired.map((item) => JSON.stringify(item.entry)).join("\n"));
+        queue = queue.filter((queued) => !expired.includes(queued));
+      } catch {
+        // Clipboard refused (no user activation?) — keep the entries queued.
       }
     }
 
@@ -180,6 +190,9 @@ export function createTransport(opts: TransportOptions): Transport {
 
   return {
     async create(entry) {
+      // Validate at the schema boundary (docs/design.md): never post or queue an
+      // entry that restore() would throw away on the next page load.
+      if (!validateEntry(entry)) return { ok: false, queued: false };
       if (await post(entry)) {
         failedRounds = 0;
         return { ok: true, queued: false };

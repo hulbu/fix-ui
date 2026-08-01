@@ -138,7 +138,7 @@ describe("createTransport", () => {
 
   it("falls back to clipboard after 5 failed flush attempts for an entry", async () => {
     const fetchImpl = failingFetch();
-    const clipboard = vi.fn(async () => {});
+    const clipboard = vi.fn<(text: string) => Promise<void>>(async () => {});
     const onQueueChange = vi.fn();
     const storage = createFakeStorage();
     const entry = makeEntry();
@@ -160,6 +160,60 @@ describe("createTransport", () => {
 
     await transport.flush();
     expect(fetchImpl).toHaveBeenCalledTimes(6); // nothing left to send
+  });
+
+  it("copies every entry expiring in the same round as one JSONL clipboard payload", async () => {
+    const a = makeEntry({ id: "a" });
+    const b = makeEntry({ id: "b" });
+    const storage = createFakeStorage({ [QUEUE_KEY]: JSON.stringify([a, b]) });
+    const fetchImpl = failingFetch();
+    const clipboard = vi.fn<(text: string) => Promise<void>>(async () => {});
+    const onQueueChange = vi.fn();
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage, clipboard, onQueueChange });
+
+    // Both entries start at zero attempts, so they cross the limit in the same round.
+    for (let i = 0; i < 5; i += 1) await transport.flush();
+
+    expect(clipboard).toHaveBeenCalledTimes(1);
+    const payload = clipboard.mock.calls[0]![0];
+    expect(payload.split("\n").map((line) => JSON.parse(line))).toEqual([a, b]);
+    expect(storage.getItem(QUEUE_KEY)).toBeNull();
+    expect(onQueueChange).toHaveBeenLastCalledWith(0);
+  });
+
+  it("keeps entries queued when the clipboard write is refused", async () => {
+    const fetchImpl = failingFetch();
+    const clipboard = vi.fn<(text: string) => Promise<void>>(async () => {
+      throw new Error("clipboard needs user activation");
+    });
+    const storage = createFakeStorage();
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage, clipboard });
+
+    await transport.create(makeEntry());
+    for (let i = 0; i < 5; i += 1) await transport.flush();
+
+    expect(clipboard).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(storage.getItem(QUEUE_KEY)!)).toHaveLength(1);
+  });
+
+  it("rejects a malformed entry without posting or queuing it", async () => {
+    const fetchImpl = okFetch();
+    const storage = createFakeStorage();
+    const onQueueChange = vi.fn();
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage, onQueueChange });
+
+    const malformed = makeEntry({ elementText: "x".repeat(200) });
+    await expect(transport.create(malformed)).resolves.toEqual({ ok: false, queued: false });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(storage.getItem(QUEUE_KEY)).toBeNull();
+    expect(onQueueChange).not.toHaveBeenCalled();
+
+    // …and the same entry within the caps goes through normally.
+    await expect(transport.create(makeEntry({ elementText: "Continue" }))).resolves.toEqual({
+      ok: true,
+      queued: false,
+    });
   });
 
   it("remove(id) sends DELETE with {id} body and returns true on {ok:true}", async () => {
