@@ -1,0 +1,22 @@
+{
+  "name": "fix-ui-extension",
+  "version": "0.0.1",
+  "description": "Chrome MV3 adapter: point at any element on any page and leave a note for your coding agent.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hulbu/fixui-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "esbuild": "^0.28.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.0"
+  }
+}

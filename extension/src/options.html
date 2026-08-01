@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>fix-ui options</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --accent: #ef5b2a;
+      }
+      body {
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+        max-width: 640px;
+        font: 14px/1.5 system-ui, sans-serif;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+      p.lede {
+        margin: 0 0 28px;
+        opacity: 0.7;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
+      input,
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font: 13px/1.5 ui-monospace, monospace;
+        outline-color: var(--accent);
+      }
+      textarea {
+        min-height: 140px;
+        resize: vertical;
+      }
+      small {
+        display: block;
+        margin-top: 6px;
+        opacity: 0.65;
+      }
+      fieldset {
+        margin: 0 0 24px;
+        padding: 0;
+        border: 0;
+      }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 9px 20px;
+        background: var(--accent);
+        color: #fff;
+        font: 600 13px system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #status {
+        margin: 16px 0 0;
+        min-height: 1.5em;
+        white-space: pre-wrap;
+      }
+      #status[data-tone="error"] {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>fix-ui</h1>
+    <p class="lede">Point at what's wrong. Your coding agent fixes it.</p>
+
+    <form id="options">
+      <fieldset>
+        <label for="bridge">Bridge URL</label>
+        <input id="bridge" name="bridge" spellcheck="false" placeholder="http://127.0.0.1:3499" />
+        <small
+          >The local <code>fixui-bridge</code> daemon. Loopback http only — that is all the
+          extension asks permission for.</small
+        >
+      </fieldset>
+
+      <fieldset>
+        <label for="projects">Origins → projects</label>
+        <textarea
+          id="projects"
+          name="projects"
+          spellcheck="false"
+          placeholder="https://app.example.com=/Users/me/app&#10;http://localhost:3000=/Users/me/site"
+        ></textarea>
+        <small
+          >One <code>origin=/absolute/project/path</code> per line; <code>#</code> starts a comment.
+          Exact origins only. Notes taken on an unmapped origin go to the bridge's own working
+          directory.</small
+        >
+      </fieldset>
+
+      <button type="submit">Save</button>
+      <p id="status" role="status"></p>
+    </form>
+
+    <script src="./options.js"></script>
+  </body>
+</html>

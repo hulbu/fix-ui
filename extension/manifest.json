@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "fix-ui",
+  "version": "0.0.1",
+  "description": "Point at what's wrong. Your coding agent fixes it.",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "fix-ui — pick an element (click again to stop)"
+  },
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "options_ui": {
+    "page": "dist/options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["activeTab", "scripting", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"]
+}
