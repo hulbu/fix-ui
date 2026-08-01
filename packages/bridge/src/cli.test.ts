@@ -1,19 +1,21 @@
 /**
- * The CLI is exercised as a real process against the *built* dist — so this
- * suite also proves `pnpm --filter fixui-bridge build` emits a runnable bin.
- * Every daemon it starts binds an ephemeral port and runs in a temp cwd, so
- * nothing here touches 3499 or this repo's inbox.
+ * The CLI is exercised as a real process against the *built* dist (built once
+ * by vitest.global-setup.ts — so this suite still runs against a bin that
+ * `pnpm --filter fixui-bridge build` produced). Every daemon it starts binds an
+ * ephemeral port and runs in a temp cwd, so nothing here touches 3499 or this
+ * repo's inbox.
+ *
+ * Note the spawns: `stdio[0]` is never a TTY, so every process here takes the
+ * MCP branch — logs on stderr, stdout reserved for the MCP transport.
  */
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
-import { afterEach, beforeAll, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 
-const execFileAsync = promisify(execFile);
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
 const cliPath = path.join(packageDir, "dist", "cli.js");
 
@@ -27,12 +29,6 @@ interface CliRun {
 const running: CliRun[] = [];
 const sockets: Server[] = [];
 const tempDirs: string[] = [];
-
-beforeAll(async () => {
-  await execFileAsync(path.join(packageDir, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], {
-    cwd: packageDir,
-  });
-}, 120_000);
 
 afterEach(async () => {
   for (const run of running.splice(0)) {
@@ -53,7 +49,9 @@ function runCli(args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): CliRu
   const child = spawn(process.execPath, [cliPath, ...args], {
     cwd,
     env: { ...process.env, ...env },
-    stdio: ["ignore", "pipe", "pipe"],
+    // A pipe on stdin: not a TTY (MCP branch) and, unlike "ignore", it does not
+    // hand the MCP transport an immediate EOF.
+    stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
@@ -90,8 +88,8 @@ async function startDaemon(args: string[] = ["--port", "0"], env: NodeJS.Process
   port: number;
 }> {
   const run = runCli(args, await tempProject(), env);
-  await waitFor(() => /listening on http:\/\/127\.0\.0\.1:\d+/.test(run.stdout), "the daemon to bind");
-  return { run, port: Number(/127\.0\.0\.1:(\d+)/.exec(run.stdout)![1]) };
+  await waitFor(() => /listening on http:\/\/127\.0\.0\.1:\d+/.test(run.stderr), "the daemon to bind");
+  return { run, port: Number(/127\.0\.0\.1:(\d+)/.exec(run.stderr)![1]) };
 }
 
 it("starts a loopback daemon on the requested port and answers /healthz", async () => {
@@ -99,7 +97,9 @@ it("starts a loopback daemon on the requested port and answers /healthz", async 
 
   const res = await fetch(`http://127.0.0.1:${port}/healthz`);
   expect(await res.json()).toMatchObject({ ok: true, name: "fixui-bridge" });
-  expect(run.stderr).toBe("");
+  // Logs go to stderr while MCP owns stdout — a single stray byte on stdout
+  // would corrupt the client's JSON-RPC framing.
+  expect(run.stdout).toBe("");
 });
 
 it("takes the port from FIXUI_PORT, and lets --port win over it", async () => {
@@ -116,13 +116,15 @@ it("takes the port from FIXUI_PORT, and lets --port win over it", async () => {
   expect(fromEnv.port).toBeGreaterThan(0);
 });
 
-it("steps aside with exit 0 when a fixui-bridge daemon already owns the port", async () => {
+it("keeps serving MCP as a proxy when a fixui-bridge daemon already owns the port", async () => {
   const { port } = await startDaemon();
 
   const second = runCli(["--port", String(port)], await tempProject());
 
-  expect(await second.exited).toBe(0);
-  expect(second.stdout).toContain(`fixui-bridge daemon already running on http://127.0.0.1:${port}`);
+  await waitFor(() => /proxy/.test(second.stderr), "the proxy to announce itself");
+  expect(second.stderr).toContain(`http://127.0.0.1:${port}`);
+  expect(second.stdout).toBe("");
+  expect(second.child.exitCode).toBeNull(); // still there, serving MCP for its own cwd
 });
 
 it("exits 1 when the port is held by something that is not the bridge", async () => {

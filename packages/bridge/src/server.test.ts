@@ -328,17 +328,18 @@ it("answers a malformed request path instead of dropping the connection", async 
 });
 
 it("lets later features register routes that reach the server's shared state", async () => {
-  // Task 5 registers /events and /reviews/:id/verdict this way.
-  server.route("POST", "/reviews/:reviewId/verdict", (ctx) => {
+  // The review channel's routes are registered through this same table (they
+  // ship with the server now, so this one uses a path nothing else claims).
+  server.route("POST", "/sessions/:sessionId/echo", (ctx) => {
     ctx.json(200, {
       ok: true,
-      reviewId: ctx.params.reviewId,
+      sessionId: ctx.params.sessionId,
       project: ctx.url.searchParams.get("project") ?? ctx.server.defaultProject,
     });
   });
 
-  const res = await fetch(`${base}/reviews/r1/verdict`, { method: "POST" });
+  const res = await fetch(`${base}/sessions/s1/echo`, { method: "POST" });
 
   expect(res.status).toBe(200);
-  expect(await body(res)).toEqual({ ok: true, reviewId: "r1", project: projectDir });
+  expect(await body(res)).toEqual({ ok: true, sessionId: "s1", project: projectDir });
 });

@@ -1,12 +1,24 @@
 #!/usr/bin/env node
 /**
- * `fixui-bridge` — start the local daemon for the project in the cwd.
+ * `fixui-bridge` — the local daemon, and the MCP server an agent harness talks
+ * to. Both, from one command, because the harness spawns this per session:
  *
- * One daemon, many projects (docs/design.md): the first instance binds the
- * port and owns the inbox files; a later instance that finds the port held by
- * another fixui-bridge steps aside. Task 5 turns that branch into proxy mode
- * (the second instance keeps serving MCP, scoped to its own cwd).
+ * - **Daemon:** the port is free, so this process binds it, owns the inbox
+ *   files and the review broker, and serves MCP over stdio in the same process
+ *   (the tools call the broker directly).
+ * - **Proxy:** the port is already held by a fixui-bridge, so this process
+ *   serves MCP over stdio alone and forwards its tools to that daemon's HTTP,
+ *   scoped to *this* process's cwd (docs/design.md "One daemon, many projects").
+ * - Anything else on the port is a hard error — we will not proxy to a stranger.
+ *
+ * **stdout belongs to the MCP transport.** Whenever MCP is wired up, every log
+ * goes to stderr; one stray byte on stdout corrupts the client's JSON-RPC
+ * framing. Whether MCP is wired at all is decided by a heuristic: a harness
+ * hands this process a pipe on stdin, a human running `fixui-bridge` in a
+ * terminal has a TTY. TTY → no MCP client is listening, so skip the MCP wiring
+ * and log normally.
  */
+import { httpTools, inProcessTools, serveMcpOverStdio } from "./mcp.js";
 import { createBridgeServer, HOST } from "./server.js";
 
 const DEFAULT_PORT = 3499;
@@ -54,23 +66,39 @@ async function bridgeOwns(port: number): Promise<boolean> {
 
 async function main(): Promise<void> {
   const port = parsePort(process.argv.slice(2), process.env);
-  const server = createBridgeServer({ port, defaultProject: process.cwd() });
+  const project = process.cwd();
+  const servesMcp = !process.stdin.isTTY;
+  const log = (message: string): void => {
+    if (servesMcp) console.error(message);
+    else console.log(message);
+  };
 
+  const server = createBridgeServer({ port, defaultProject: project });
   try {
     await server.start();
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== "EADDRINUSE") throw cause;
-    if (await bridgeOwns(port)) {
-      console.log(`fixui-bridge daemon already running on http://${HOST}:${port}`);
-      return;
+    if (!(await bridgeOwns(port))) {
+      throw new UsageError(`port ${port} is in use by another process — stop it or pass --port N`);
     }
-    throw new UsageError(`port ${port} is in use by another process — stop it or pass --port N`);
+
+    log(
+      `fixui-bridge daemon already running on http://${HOST}:${port}` +
+        ` — serving MCP as a proxy (project ${project})`,
+    );
+    // Nothing else for a terminal invocation to do; the daemon has the port.
+    if (servesMcp) await serveMcpOverStdio(httpTools(`http://${HOST}:${port}`, project));
+    return;
   }
 
-  console.log(`fixui-bridge listening on http://${HOST}:${server.port} (project ${server.defaultProject})`);
+  log(`fixui-bridge listening on http://${HOST}:${server.port} (project ${project})`);
+  if (servesMcp) await serveMcpOverStdio(inProcessTools(server.broker, project));
 
   const shutdown = (): void => {
-    void server.stop().then(() => process.exit(0));
+    void server.stop().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

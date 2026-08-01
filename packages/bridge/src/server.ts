@@ -1,18 +1,25 @@
 /**
  * The bridge's HTTP surface: `POST /entries`, `GET /entries`, `DELETE
  * /entries/:id` (plus the prototype's body-style `DELETE /entries {id}`, so one
- * transport client works bridge-less against an app-provided endpoint) and
- * `GET /healthz`.
+ * transport client works bridge-less against an app-provided endpoint),
+ * `GET /healthz`, and the review channel — `GET /events` (SSE to adapters),
+ * `POST /reviews` (the agent's held call) and `POST /reviews/:id/verdict`.
  *
  * Loopback only — this is a local dev daemon, never a network service. CORS is
  * wide open because the callers are whatever origin the developer's app runs on.
  *
- * Routes live in a table so later features can register their own (the review
- * channel's `/events` and `/reviews/:id/verdict`) and reach shared state
- * through `ctx.server`.
+ * Routes live in a table so later features can register their own and reach
+ * shared state through `ctx.server`.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import {
+  BusyError,
+  createReviewBroker,
+  DEFAULT_TIMEOUT_SECONDS,
+  type ReviewBroker,
+  type ReviewOutcome,
+} from "./broker.js";
 import {
   appendEntry,
   listEntries,
@@ -23,6 +30,10 @@ import {
 import { packageVersion } from "./version.js";
 
 export const HOST = "127.0.0.1";
+
+/** Comment-line keep-alive for SSE (docs/agent-integration.md): intermediaries
+ *  and idle-socket timers must not decide a quiet review is a dead stream. */
+const HEARTBEAT_MS = 15_000;
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -35,6 +46,8 @@ export interface BridgeServerOptions {
   port: number;
   /** Where entries go when the wire carries no `project` — the daemon's cwd. */
   defaultProject: string;
+  /** SSE keep-alive spacing; only tests have a reason to shorten it. */
+  heartbeatMs?: number;
 }
 
 export interface RouteContext {
@@ -52,6 +65,8 @@ export interface BridgeServer {
   /** The bound port once started (the requested one until then). */
   readonly port: number;
   readonly defaultProject: string;
+  /** One broker per daemon — the MCP server calls it in-process. */
+  readonly broker: ReviewBroker;
   /** Register a route; `:name` segments become `ctx.params.name`. */
   route(method: string, pattern: string, handler: RouteHandler): void;
   start(): Promise<void>;
@@ -93,6 +108,10 @@ export async function readJsonRecord(req: IncomingMessage): Promise<JsonRecord |
 
 function isFilledString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function normalizePath(pathname: string): string {
@@ -137,6 +156,8 @@ const INVALID_PROJECT = "project must be an absolute path to an existing directo
 
 export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   const routes: Route[] = [];
+  const broker = createReviewBroker();
+  const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
   let boundPort = opts.port;
   let http: Server | undefined;
 
@@ -145,6 +166,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
       return boundPort;
     },
     defaultProject: opts.defaultProject,
+    broker,
 
     route(method, pattern, handler) {
       routes.push({ method, segments: normalizePath(pattern).split("/"), handler });
@@ -169,6 +191,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     },
 
     stop() {
+      broker.stop(); // held reviews and their timers die with the daemon
       const server = http;
       if (!server) return Promise.resolve();
       http = undefined;
@@ -260,6 +283,97 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
     await removeEntry(project, String(id));
+    ctx.json(200, { ok: true });
+  });
+
+  // ── The review channel (docs/agent-integration.md "Direction 2") ──────────
+
+  /** The adapter's half: one long-lived SSE stream per page. */
+  api.route("GET", "/events", (ctx) => {
+    const project = projectFromQuery(ctx);
+    if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
+
+    const write = (chunk: string): void => {
+      if (!ctx.res.writableEnded && !ctx.res.destroyed) ctx.res.write(chunk);
+    };
+
+    ctx.res.writeHead(200, {
+      ...CORS_HEADERS,
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+    // A comment right away flushes the headers, so the page knows it is on.
+    write(": connected\n\n");
+
+    const heartbeat = setInterval(() => write(": heartbeat\n\n"), heartbeatMs);
+    const unsubscribe = broker.subscribe(project, {
+      send: (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+    });
+    ctx.res.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+    // No `end()`: the stream stays open until the page goes away.
+  });
+
+  /** The agent's half: held open, answered only when the review resolves. */
+  api.route("POST", "/reviews", async (ctx) => {
+    const body = await readJsonRecord(ctx.req);
+    if (!body) return ctx.json(400, { ok: false, error: "expected a JSON object body" });
+    if (!isFilledString(body.prompt)) {
+      return ctx.json(400, { ok: false, error: "review requires a non-empty prompt" });
+    }
+
+    const timeout = body.timeoutSeconds;
+    if (timeout !== undefined && !isPositiveNumber(timeout)) {
+      return ctx.json(400, {
+        ok: false,
+        error: "timeoutSeconds must be a positive number of seconds (fractions allowed)",
+      });
+    }
+
+    const project = resolveProject(body.project, api.defaultProject);
+    if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
+
+    let outcome: ReviewOutcome;
+    try {
+      outcome = await broker.requestReview({
+        project,
+        prompt: body.prompt,
+        ...(typeof body.url === "string" ? { url: body.url } : {}),
+        timeoutSeconds: timeout ?? DEFAULT_TIMEOUT_SECONDS,
+      });
+    } catch (cause) {
+      if (!(cause instanceof BusyError)) throw cause;
+      return ctx.json(409, { ok: false, error: "busy" });
+    }
+
+    // Minutes may have passed: the agent could have walked away from the call.
+    if (ctx.res.writableEnded || ctx.res.destroyed) return;
+    ctx.json(200, outcome);
+  });
+
+  /** The page's answer. It carries only the review id — the pending review is
+   *  what names the project, so no routing argument is needed here. */
+  api.route("POST", "/reviews/:reviewId/verdict", async (ctx) => {
+    const body = await readJsonRecord(ctx.req);
+    if (!body) return ctx.json(400, { ok: false, error: "expected a JSON object body" });
+
+    const verdict = body.verdict;
+    if (verdict !== "approved" && verdict !== "changes") {
+      return ctx.json(400, { ok: false, error: 'verdict must be "approved" or "changes"' });
+    }
+
+    const entryIds = body.entryIds;
+    if (!Array.isArray(entryIds) || entryIds.some((id) => typeof id !== "string")) {
+      return ctx.json(400, { ok: false, error: "entryIds must be an array of entry ids" });
+    }
+
+    const resolved = await broker.submitVerdict(ctx.params.reviewId!, verdict, entryIds as string[]);
+    if (!resolved) {
+      return ctx.json(404, { ok: false, error: `no pending review ${ctx.params.reviewId}` });
+    }
     ctx.json(200, { ok: true });
   });
 
