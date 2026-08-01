@@ -7,17 +7,20 @@ import type { Transport } from "./transport";
 const NS = "data-uifb";
 const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast],[${NS}-banner]`;
 
-type FakeTransport = Transport & { created: FeedbackEntry[] };
+type FakeTransport = Transport & { created: FeedbackEntry[]; listed: FeedbackEntry[] };
 
 function fakeTransport(result: { ok: boolean; queued: boolean } = { ok: true, queued: false }): FakeTransport {
   const created: FeedbackEntry[] = [];
+  /** What the bridge inbox reports — [] both when empty and when unreachable. */
+  const listed: FeedbackEntry[] = [];
   return {
     created,
+    listed,
     create: vi.fn(async (entry: FeedbackEntry) => {
       created.push(entry);
       return result;
     }),
-    list: vi.fn(async () => []),
+    list: vi.fn(async () => [...listed]),
     remove: vi.fn(async () => true),
     flush: vi.fn(async () => {}),
     destroy: vi.fn(),
@@ -268,19 +271,56 @@ describe("createPicker", () => {
     expect(query(`[${NS}-badge]`)!.textContent).toBe("1"); // the note is still the user's
   });
 
-  it("mounts into a shadow root and still sees its own UI through the shadow boundary", () => {
-    document.body.innerHTML = `<button id="cta">Continue</button><div id="host"></div>`;
-    const root = query("#host")!.attachShadow({ mode: "open" });
-    const picker = make({ transport: fakeTransport(), mount: root });
+  it("a queued note survives panel hydration and de-duplicates once the bridge reports it", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport({ ok: false, queued: true });
+    const picker = make({ transport });
 
     picker.enable();
-    const chip = root.querySelector<HTMLButtonElement>(`[${NS}-chip]`);
-    expect(chip).not.toBeNull();
+    clickSequence(query("#cta")!);
+    await typeAndSave("queued note");
+    picker.disable();
 
-    // A click on our own chip must not be swallowed by the picking listeners.
-    const own = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, clientX: 5, clientY: 5 });
-    chip!.dispatchEvent(own);
-    expect(own.defaultPrevented).toBe(false);
-    expect(root.querySelector(`[${NS}-pop]`)).toBeNull();
+    const chip = query(`[${NS}-chip]`)!;
+    chip.click(); // opens the panel → hydrate() against an inbox that answers []
+    await settle();
+
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    expect(query(`[${NS}-panel]`)!.textContent).toContain("queued note");
+
+    // The transport flushed its queue: the inbox now reports the same entry.
+    transport.listed.push(transport.created[0]!);
+    chip.click(); // close
+    chip.click(); // reopen → hydrate again
+    await settle();
+
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    expect(query(`[${NS}-panel]`)!.querySelectorAll(`[${NS}-row]`).length).toBe(1);
   });
+
+  it.each(["closed", "open"] as const)(
+    "mounts into a %s shadow root and still sees its own UI through the shadow boundary",
+    (mode) => {
+      document.body.innerHTML = `<button id="cta">Continue</button><div id="host"></div>`;
+      const root = query("#host")!.attachShadow({ mode });
+      const picker = make({ transport: fakeTransport(), mount: root });
+
+      picker.enable();
+      const chip = root.querySelector<HTMLButtonElement>(`[${NS}-chip]`);
+      expect(chip).not.toBeNull();
+
+      // The page is pickable through the mount…
+      const page = clickSequence(query("#cta")!);
+      expect(page.every((e) => e.defaultPrevented)).toBe(true);
+      expect(root.querySelector(`[${NS}-pop]`)).not.toBeNull();
+
+      // …and our own UI still works: a closed root retargets composedPath() to
+      // the bare host, so if the picker doesn't recognise it, this click is
+      // suppressed and the chip's own handler (stop picking) never runs.
+      const own = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, clientX: 5, clientY: 5 });
+      chip!.dispatchEvent(own);
+      expect(own.defaultPrevented).toBe(false);
+      expect(picker.active).toBe(false);
+    },
+  );
 });

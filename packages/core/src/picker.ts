@@ -86,6 +86,9 @@ export function createPicker(opts: PickerOptions): Picker {
   const showChip = opts.chip ?? true;
   const componentNameOf = opts.capture?.componentName ?? getReactComponentName;
   const mount: Element | ShadowRoot = opts.mount ?? document.body;
+  // Only a shadow-root mount is "ours" wholesale — an Element mount may be
+  // document.body, and treating that as picker UI would suppress every pick.
+  const ownRoot: ShadowRoot | null = isShadowRoot(mount) ? mount : null;
   // Top-layer promotion is progressive enhancement: without it the UI is a
   // plain fixed overlay, which is what old browsers (and jsdom) get.
   const supportsPopover =
@@ -94,6 +97,14 @@ export function createPicker(opts: PickerOptions): Picker {
   let active = false;
   let target: Element | null = null;
   let entries: FeedbackEntry[] = [];
+  /**
+   * Notes this picker took that the transport has not delivered yet (queued
+   * for retry). `list()` can't see them — and it answers `[]` for an empty
+   * inbox AND for an unreachable bridge alike — so hydration must merge them
+   * back in rather than trust the listing wholesale. Losing them here would
+   * tell the user their note vanished while the transport is still retrying it.
+   */
+  const unconfirmed = new Map<string, FeedbackEntry>();
   let review: { reviewId: string; entryIds: string[]; armed: boolean } | null = null;
   const verdictListeners = new Set<(v: ReviewVerdict) => void>();
   const toasts = new Set<HTMLElement>();
@@ -181,7 +192,7 @@ export function createPicker(opts: PickerOptions): Picker {
   // A shadow-root mount needs its own copy — document styles don't cross the
   // boundary — while the head copy keeps the UI styled once it re-homes into
   // a light-DOM modal dialog.
-  if (isShadowRoot(mount)) addStyle(mount);
+  if (ownRoot) addStyle(ownRoot);
   addStyle(document.head);
 
   // --- Mechanics 1 + 2: top layer and re-homing ----------------------------
@@ -301,9 +312,12 @@ export function createPicker(opts: PickerOptions): Picker {
     try {
       listed = await transport.list();
     } catch {
-      return; // transport unreachable — keep whatever we have locally
+      return; // a custom transport threw — keep whatever we have locally
     }
-    entries = listed.filter((e) => e.id && e.note);
+    const known = listed.filter((e) => e.id && e.note);
+    // Anything the inbox now reports is confirmed and stops being ours to keep.
+    for (const entry of known) unconfirmed.delete(entry.id);
+    entries = [...known, ...unconfirmed.values()];
     updateBadge();
     renderPanel();
   }
@@ -405,15 +419,21 @@ export function createPicker(opts: PickerOptions): Picker {
       return;
     }
     entries = entries.filter((e) => e.id !== id);
+    unconfirmed.delete(id);
     updateBadge();
     renderPanel();
   }
 
   function isOwnUi(node: unknown): boolean {
+    // A CLOSED shadow tree is invisible to listeners outside it: composedPath()
+    // omits its nodes and retargets to the host, which carries none of our
+    // attributes. The root and its host therefore count as our UI outright —
+    // without this, picking would suppress clicks on our own chip and panel.
+    if (ownRoot !== null && (node === ownRoot || node === ownRoot.host)) return true;
     return node instanceof Element && Boolean(node.closest(OWN_UI));
   }
 
-  /** composedPath() sees our UI even when it lives in a (closed) shadow root. */
+  /** True for anything that happened inside the picker's own UI. */
   function fromOwnUi(e: Event): boolean {
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
     return path.length > 0 ? path.some(isOwnUi) : isOwnUi(e.target);
@@ -576,6 +596,7 @@ export function createPicker(opts: PickerOptions): Picker {
 
     entries.push(entry);
     review?.entryIds.push(entry.id);
+    if (!result.ok) unconfirmed.set(entry.id, entry); // queued: the inbox hasn't got it yet
     updateBadge();
     renderPanel();
     if (result.ok) {
