@@ -202,8 +202,60 @@ function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-export async function serveMcpOverStdio(tools: ReviewTools): Promise<void> {
-  await createMcpServer(tools).connect(new StdioServerTransport());
+/**
+ * The inbox-change notification promised by docs/agent-integration.md. The
+ * method is the bare `feedback/updated` the doc names: the SDK's
+ * `assertNotificationCapability` switches only on the protocol's own
+ * `notifications/*` methods and lets anything else through, and the client side
+ * routes an unknown method to its fallback notification handler — so no
+ * `notifications/` prefix is needed (or wanted: this is not a protocol
+ * notification, and the prefix is the spec's namespace, not ours).
+ */
+export const FEEDBACK_UPDATED = "feedback/updated";
+
+/** Watch inbox mutations; the returned function stops watching. */
+export type InboxChanges = (listener: (project: string) => void) => () => void;
+
+export interface StdioOptions {
+  /**
+   * Daemon mode only. The proxy has none: its MCP client is attached to *this*
+   * process while the inbox is mutated in the daemon's, which has no way to
+   * reach back here (docs/agent-integration.md).
+   */
+  onInboxChange?: InboxChanges;
+}
+
+export async function serveMcpOverStdio(
+  tools: ReviewTools,
+  options: StdioOptions = {},
+): Promise<void> {
+  const server = createMcpServer(tools);
+  const { onInboxChange } = options;
+  let unsubscribe: (() => void) | undefined;
+
+  if (onInboxChange) {
+    // Only once a client has completed the handshake. Stdio is wired whenever
+    // this process was not started from a terminal, so a daemon nobody speaks
+    // MCP to would otherwise write JSON-RPC frames at a stdout no client ever
+    // initialized — noise at best, a protocol violation at worst.
+    server.oninitialized = (): void => {
+      unsubscribe = onInboxChange((project) => {
+        // Fire-and-forget: an inbox write must never wait on — or fail because
+        // of — a client that hung up mid-notification.
+        void server
+          .notification({ method: FEEDBACK_UPDATED, params: { project } })
+          .catch(() => undefined);
+      });
+    };
+    const closed = server.onclose;
+    server.onclose = (): void => {
+      unsubscribe?.();
+      unsubscribe = undefined;
+      closed?.();
+    };
+  }
+
+  await server.connect(new StdioServerTransport());
 }
 
 /** Daemon mode: this process owns the broker and the inbox files. */

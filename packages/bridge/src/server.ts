@@ -69,6 +69,14 @@ export interface BridgeServer {
   readonly broker: ReviewBroker;
   /** Register a route; `:name` segments become `ctx.params.name`. */
   route(method: string, pattern: string, handler: RouteHandler): void;
+  /**
+   * Watch inbox mutations; the listener gets the resolved project directory,
+   * and the returned function stops watching. Fire-and-forget by contract: a
+   * listener that throws or blocks may not affect the HTTP request that caused
+   * the change (daemon mode turns this into an MCP `feedback/updated`
+   * notification — docs/agent-integration.md).
+   */
+  onInboxChange(listener: (project: string) => void): () => void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -158,8 +166,21 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   const routes: Route[] = [];
   const broker = createReviewBroker();
   const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
+  const inboxListeners = new Set<(project: string) => void>();
   let boundPort = opts.port;
   let http: Server | undefined;
+
+  /** Tell the watchers the inbox changed. Never on the request's critical path:
+   *  a broken listener is the listener's problem, not the writer's. */
+  function inboxChanged(project: string): void {
+    for (const listener of [...inboxListeners]) {
+      try {
+        listener(project);
+      } catch {
+        // Nothing to do — the entry is already on disk and answered.
+      }
+    }
+  }
 
   const api: BridgeServer = {
     get port() {
@@ -170,6 +191,13 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
 
     route(method, pattern, handler) {
       routes.push({ method, segments: normalizePath(pattern).split("/"), handler });
+    },
+
+    onInboxChange(listener) {
+      inboxListeners.add(listener);
+      return () => {
+        inboxListeners.delete(listener);
+      };
     },
 
     start() {
@@ -251,6 +279,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
     ctx.json(200, { ok: true, entry: await appendEntry(project, entry) });
+    inboxChanged(project);
   });
 
   api.route("GET", "/entries", async (ctx) => {
@@ -264,8 +293,11 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     const project = projectFromQuery(ctx);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
-    await removeEntry(project, ctx.params.id!);
+    const removed = await removeEntry(project, ctx.params.id!);
     ctx.json(200, { ok: true });
+    // Only a real removal is a change: `{ok:true}` also answers an unknown id,
+    // and announcing that would make `feedback/updated` mean nothing.
+    if (removed) inboxChanged(project);
   });
 
   // The prototype's body-style delete, kept so one transport client serves both.
@@ -282,8 +314,9 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     const project = resolveProject(requested, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
-    await removeEntry(project, String(id));
+    const removed = await removeEntry(project, String(id));
     ctx.json(200, { ok: true });
+    if (removed) inboxChanged(project);
   });
 
   // ── The review channel (docs/agent-integration.md "Direction 2") ──────────

@@ -92,7 +92,13 @@ async function main(): Promise<void> {
   }
 
   log(`fixui-bridge listening on http://${HOST}:${server.port} (project ${project})`);
-  if (servesMcp) await serveMcpOverStdio(inProcessTools(server.broker, project));
+  // Daemon mode owns the inbox, so it is the only mode that can announce inbox
+  // changes to the harness (`feedback/updated`).
+  if (servesMcp) {
+    await serveMcpOverStdio(inProcessTools(server.broker, project), {
+      onInboxChange: server.onInboxChange,
+    });
+  }
 
   const shutdown = (): void => {
     void server.stop().then(

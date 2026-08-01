@@ -81,6 +81,28 @@ async function connect(cwd: string, args: string[] = ["--port", "0"]): Promise<{
   return { client, stderr: () => stderr };
 }
 
+/** The port the spawned bridge logged (stderr — stdout is the MCP transport).
+ *  Node buffers a paused stream, so a listener attached after the line was
+ *  written still sees it. */
+async function waitForPort(stderr: () => string): Promise<number> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const match = /listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(stderr());
+    if (match) return Number(match[1]);
+    await new Promise((done) => setTimeout(done, 20));
+  }
+  throw new Error(`bridge never logged a port; stderr: ${stderr()}`);
+}
+
+async function waitUntil(condition: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise((done) => setTimeout(done, 10));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 async function callJson(client: Client, name: string, args: Record<string, unknown>): Promise<any> {
   const result = (await client.callTool({ name, arguments: args })) as {
     content: { type: string; text: string }[];
@@ -170,6 +192,49 @@ it("request_review returns no-reviewer immediately when nobody is connected", as
     arguments: { prompt: "   " },
   })) as { isError?: boolean };
   expect(empty.isError).toBe(true);
+});
+
+it("daemon mode: an inbox change over HTTP notifies the connected MCP client", async () => {
+  // One process, both roles: it binds the port AND serves this client's MCP
+  // over stdio, which is the only wiring where the notification can exist.
+  const dir = await tempProject();
+  const { client, stderr } = await connect(dir);
+  const port = await waitForPort(stderr);
+
+  const notifications: { method: string; params?: Record<string, unknown> }[] = [];
+  client.fallbackNotificationHandler = (notification) => {
+    notifications.push(notification as { method: string; params?: Record<string, unknown> });
+    return Promise.resolve();
+  };
+
+  // `project` travels on the wire so the notification names this exact
+  // directory (a spawned process's cwd resolves symlinks; path.resolve does not).
+  const created = await fetch(`http://127.0.0.1:${port}/entries`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...sampleEntry("http-1", "from the page"), project: dir }),
+  });
+  expect(created.ok).toBe(true);
+
+  await waitUntil(() => notifications.length >= 1, "the create notification");
+  expect(notifications[0]).toMatchObject({ method: "feedback/updated", params: { project: dir } });
+  expect(Object.keys(notifications[0]!.params ?? {})).toEqual(["project"]);
+
+  const query = `?project=${encodeURIComponent(dir)}`;
+  const deleted = await fetch(`http://127.0.0.1:${port}/entries/http-1${query}`, {
+    method: "DELETE",
+  });
+  expect(deleted.ok).toBe(true);
+  await waitUntil(() => notifications.length >= 2, "the delete notification");
+  expect(notifications[1]).toMatchObject({ method: "feedback/updated", params: { project: dir } });
+
+  // An unknown id answers `{ok:true}` but changes nothing, so it announces nothing.
+  await fetch(`http://127.0.0.1:${port}/entries/never-existed${query}`, { method: "DELETE" });
+  await new Promise((done) => setTimeout(done, 150));
+  expect(notifications).toHaveLength(2);
+
+  // …and the tools still work over the same connection.
+  expect((await callJson(client, "list_feedback", { project: dir })).entries).toEqual([]);
 });
 
 /** An MCP client wired to a server in this process — no spawn, no HTTP. */
