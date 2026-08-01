@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "playwright test",
+    "test": "node run-tests.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

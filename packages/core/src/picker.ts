@@ -71,6 +71,22 @@ function isShadowRoot(node: Element | ShadowRoot): node is ShadowRoot {
   return typeof ShadowRoot !== "undefined" && node instanceof ShadowRoot;
 }
 
+/**
+ * Did a person do this?
+ *
+ * Mechanic 2 (re-homing into the page's own modal dialog) puts the picker's UI
+ * in the page's light DOM while a modal is open, where page script can find it
+ * and `.click()` it. `isTrusted` is the browser's own word for "this event came
+ * from a user, not from script", and it is the one thing script cannot forge —
+ * so the two decisions that must be a human's (a verdict on the agent's review,
+ * and committing a note) require it. Hovering, highlighting and cancelling do
+ * not: they cost nothing and the check would only make the picker feel broken
+ * under a test harness that synthesizes events.
+ */
+function isHuman(e: Event): boolean {
+  return e.isTrusted;
+}
+
 /** `:modal` / `:popover-open` throw where they are unsupported (jsdom, older engines). */
 function safeMatches(el: Element, selector: string): boolean {
   try {
@@ -541,13 +557,16 @@ export function createPicker(opts: PickerOptions): Picker {
       save.disabled = textarea.value.trim().length === 0;
     });
     textarea.addEventListener("keydown", (ke) => {
-      if (ke.key === "Enter" && !ke.shiftKey) {
+      if (ke.key === "Enter" && !ke.shiftKey && isHuman(ke)) {
         ke.preventDefault();
         void submit(textarea.value);
       }
       ke.stopPropagation();
     });
-    save.addEventListener("click", () => void submit(textarea.value));
+    save.addEventListener("click", (e) => {
+      if (!isHuman(e)) return;
+      void submit(textarea.value);
+    });
     cancel.addEventListener("click", () => closePopover());
     textarea.focus();
   }
@@ -581,7 +600,7 @@ export function createPicker(opts: PickerOptions): Picker {
     );
     closePopover();
 
-    let result: { ok: boolean; queued: boolean };
+    let result: { ok: boolean; queued: boolean; error?: string };
     try {
       result = await transport.create(entry);
     } catch {
@@ -602,6 +621,11 @@ export function createPicker(opts: PickerOptions): Picker {
     if (result.ok) {
       toast(`Saved (${entries.length}) — tap ✛ to review`);
       opts.onSaved?.(entry);
+    } else if (result.error !== undefined) {
+      // The endpoint answered and said why (an unwritable inbox names the path
+      // it tried). Verbatim, per docs/design.md "Error handling" — "bridge
+      // unreachable" would be a lie AND would hide the path. Still queued.
+      toast(result.error);
     } else {
       // Durably queued by the transport; it retries with backoff.
       toast(`Bridge unreachable — queued (${entries.length})`);
@@ -638,6 +662,7 @@ export function createPicker(opts: PickerOptions): Picker {
     approve.setAttribute(`${NS}-approve`, "");
     approve.textContent = "Approve";
     approve.addEventListener("click", (e) => {
+      if (!isHuman(e)) return;
       e.stopPropagation();
       emitVerdict("approved");
     });
@@ -646,6 +671,7 @@ export function createPicker(opts: PickerOptions): Picker {
     changes.setAttribute(`${NS}-changes`, "");
     changes.textContent = "Request changes";
     changes.addEventListener("click", (e) => {
+      if (!isHuman(e)) return;
       e.stopPropagation();
       emitVerdict("changes");
     });
@@ -660,9 +686,16 @@ export function createPicker(opts: PickerOptions): Picker {
   }
 
   function startReview(req: ReviewRequest): void {
-    endReview();
-    review = { reviewId: req.reviewId, entryIds: [], armed: !active };
-    showBanner(req.prompt);
+    // The bridge replays `review-requested` to every new subscriber, so a
+    // dropped stream (an SSE reconnect, the extension's worker reviving) calls
+    // this again for the review already running. That is a RESUME, not a new
+    // review: rebuilding the state would throw away the ids of notes taken so
+    // far and report `changes` with nothing to act on — the one verdict pair
+    // the agent cannot use.
+    const resumed = review?.reviewId === req.reviewId ? review : null;
+    if (!resumed) endReview(); // a different review: stand the old one down first
+    review = resumed ?? { reviewId: req.reviewId, entryIds: [], armed: !active };
+    showBanner(req.prompt); // replaces any banner already up
     enable(); // the plugin activates itself — the human never hunts for the chip
   }
 

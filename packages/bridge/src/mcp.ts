@@ -36,6 +36,17 @@ export interface ReviewToolInput {
   url?: string;
   timeoutSeconds?: number;
   project?: string;
+  /**
+   * The SDK's per-call cancellation — aborted when the client sends
+   * `notifications/cancelled`, which is what Esc in Claude Code does.
+   *
+   * Without it an escaped review keeps its project `busy` for the rest of
+   * `timeoutSeconds` (ten minutes by default) with the page's banner still up,
+   * and the only recovery in daemon mode is killing an MCP server the session
+   * itself owns. The socket-level guard in server.ts covers a different death
+   * (the whole proxy process going away), not this one.
+   */
+  signal?: AbortSignal;
 }
 
 /** What the three tools need, however this process happens to be wired. */
@@ -149,13 +160,18 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
           const url = optionalString(args.url, "url");
           if (url !== undefined) input.url = url;
           if (args.timeoutSeconds !== undefined) {
-            if (typeof args.timeoutSeconds !== "number" || !(args.timeoutSeconds > 0)) {
+            // `Number.isFinite`, matching the HTTP boundary in server.ts:
+            // `Infinity > 0` is true and would become an unbounded held call.
+            if (!Number.isFinite(args.timeoutSeconds) || !((args.timeoutSeconds as number) > 0)) {
               throw new ToolError("timeoutSeconds must be a positive number");
             }
-            input.timeoutSeconds = args.timeoutSeconds;
+            input.timeoutSeconds = args.timeoutSeconds as number;
           }
           const project = optionalString(args.project, "project");
           if (project !== undefined) input.project = project;
+          // The client's own cancellation, honored in both modes (see
+          // ReviewToolInput.signal).
+          if (extra.signal) input.signal = extra.signal;
 
           // Long waits must not trip the client's tool timeout: clients that
           // honor progress notifications keep the call alive while we hold it.
@@ -282,6 +298,9 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
         prompt: input.prompt,
         ...(input.url === undefined ? {} : { url: input.url }),
         timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
+        // Esc in the client frees the project and stands the banner down, the
+        // same way a dead agent's dropped socket does over HTTP.
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
     },
   };
@@ -302,8 +321,9 @@ export function httpTools(baseUrl: string, defaultProject: string): ReviewTools 
     method: string,
     path: string,
     body?: JsonRecord,
+    signal?: AbortSignal,
   ): Promise<{ status: number; payload: JsonRecord }> => {
-    const response = await send(`${baseUrl}${path}`, method, body);
+    const response = await send(`${baseUrl}${path}`, method, body, signal);
     let payload: JsonRecord = {};
     try {
       const parsed: unknown = JSON.parse(response.body);
@@ -336,12 +356,21 @@ export function httpTools(baseUrl: string, defaultProject: string): ReviewTools 
       return { ok: true };
     },
     async requestReview(input) {
-      const { status, payload } = await call("POST", "/reviews", {
-        prompt: input.prompt,
-        ...(input.url === undefined ? {} : { url: input.url }),
-        ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
-        project: input.project ?? defaultProject,
-      });
+      // Dropping this request is how the cancellation reaches the daemon: the
+      // held `POST /reviews` watches its own response socket and abandons the
+      // review the moment it closes (server.ts), which frees the project and
+      // stands the page's banner down.
+      const { status, payload } = await call(
+        "POST",
+        "/reviews",
+        {
+          prompt: input.prompt,
+          ...(input.url === undefined ? {} : { url: input.url }),
+          ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
+          project: input.project ?? defaultProject,
+        },
+        input.signal,
+      );
       if (status === 409) throw new BusyError();
       if (status >= 400) throw fail(status, payload);
       return payload as unknown as ReviewOutcome;
@@ -349,11 +378,13 @@ export function httpTools(baseUrl: string, defaultProject: string): ReviewTools 
   };
 }
 
-/** A JSON round-trip with no client-side deadline of its own. */
+/** A JSON round-trip with no client-side deadline of its own. `signal` is the
+ *  caller's cancellation — never a timeout, which the daemon alone owns. */
 function send(
   url: string,
   method: string,
   body?: JsonRecord,
+  signal?: AbortSignal,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -377,6 +408,18 @@ function send(
       },
     );
     req.on("error", reject);
+
+    // Destroying the request closes the socket the daemon is holding this
+    // review on, which is exactly the "the agent went away" path it already
+    // watches for. `once`: the normal end of every call aborts nothing.
+    const cancel = (): void => {
+      req.destroy(new Error("cancelled"));
+    };
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
+    const stopWatching = (): void => signal?.removeEventListener("abort", cancel);
+    req.on("close", stopWatching);
+
     if (payload) req.write(payload);
     req.end();
   });

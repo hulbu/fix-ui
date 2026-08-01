@@ -29,8 +29,12 @@ export interface TransportOptions {
 }
 
 export interface Transport {
-  /** Malformed entries are rejected outright: `{ok:false,queued:false}`, nothing sent. */
-  create(entry: FeedbackEntry): Promise<{ ok: boolean; queued: boolean }>;
+  /**
+   * Malformed entries are rejected outright: `{ok:false,queued:false}`, nothing
+   * sent. `error` is present only when the endpoint answered and said why — the
+   * caller shows it verbatim rather than guessing "bridge unreachable".
+   */
+  create(entry: FeedbackEntry): Promise<{ ok: boolean; queued: boolean; error?: string }>;
   list(): Promise<FeedbackEntry[]>;
   /** Body-style DELETE {id} — works against the bridge AND prototype-style app routes. */
   remove(id: string): Promise<boolean>;
@@ -127,15 +131,29 @@ export function createTransport(opts: TransportOptions): Transport {
     }, delay);
   }
 
-  async function post(entry: FeedbackEntry): Promise<boolean> {
-    const wire = opts.project === undefined || entry.project !== undefined
-      ? entry
-      : { ...entry, project: opts.project };
+  /**
+   * `{ok:false}` with no `error` is "the bridge never answered"; with one, the
+   * bridge answered and that string is its own words (docs/design.md "Error
+   * handling": the adapter surfaces the bridge's message verbatim, so an
+   * unwritable inbox names the path it tried instead of claiming the daemon is
+   * down).
+   */
+  async function post(entry: FeedbackEntry): Promise<{ ok: boolean; error?: string }> {
+    // The CONFIGURED project wins. An entry's own `project` is data, and data
+    // can come from a durable queue that something other than this adapter
+    // wrote — letting it pick the destination directory would make the queue a
+    // way to choose where notes land.
+    const wire = opts.project === undefined ? entry : { ...entry, project: opts.project };
     try {
       const res = await request({ method: "POST", headers: JSON_HEADERS, body: JSON.stringify(wire) });
-      return res.ok;
+      if (res.ok) return { ok: true };
+      const body: unknown = await res.json().catch(() => null);
+      const error = (body as { error?: unknown } | null)?.error;
+      return typeof error === "string" && error.trim() !== ""
+        ? { ok: false, error }
+        : { ok: false, error: `bridge answered ${res.status}` };
     } catch {
-      return false;
+      return { ok: false }; // unreachable: no answer to surface
     }
   }
 
@@ -146,7 +164,7 @@ export function createTransport(opts: TransportOptions): Transport {
 
     for (const item of [...queue]) {
       if (destroyed) break; // stop sending, but still persist what's left
-      if (await post(item.entry)) {
+      if ((await post(item.entry)).ok) {
         queue = queue.filter((queued) => queued !== item);
         delivered = true;
         continue;
@@ -201,14 +219,17 @@ export function createTransport(opts: TransportOptions): Transport {
       // Validate at the schema boundary (docs/design.md): never post or queue an
       // entry that restore() would throw away on the next page load.
       if (!validateEntry(entry)) return { ok: false, queued: false };
-      if (await post(entry)) {
+      const sent = await post(entry);
+      if (sent.ok) {
         failedRounds = 0;
         return { ok: true, queued: false };
       }
       enqueue(entry);
       failedRounds += 1;
       scheduleRetry();
-      return { ok: false, queued: true };
+      return sent.error === undefined
+        ? { ok: false, queued: true }
+        : { ok: false, queued: true, error: sent.error };
     },
 
     async list() {

@@ -106,13 +106,44 @@ describe("createTransport", () => {
     expect(onQueueChange).toHaveBeenLastCalledWith(0);
   });
 
-  it("queues when the endpoint answers a non-2xx status", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ ok: false, error: "unwritable" }, 500));
+  /**
+   * docs/design.md "Error handling": an unwritable inbox is answered with the
+   * path the bridge tried, and the adapter surfaces that verbatim. Reporting it
+   * as an unreachable bridge would be false — the bridge answered — and would
+   * hide the one piece of information the developer needs.
+   */
+  it("queues when the endpoint answers a non-2xx status, and carries its message back", async () => {
+    const error = "EACCES: permission denied, open '/Users/me/app/.fix-ui.jsonl'";
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ ok: false, error }, 500));
     const storage = createFakeStorage();
     const transport = make({ endpoint: ENDPOINT, fetchImpl, storage });
 
-    await expect(transport.create(makeEntry())).resolves.toEqual({ ok: false, queued: true });
+    await expect(transport.create(makeEntry())).resolves.toEqual({ ok: false, queued: true, error });
     expect(JSON.parse(storage.getItem(QUEUE_KEY)!)).toHaveLength(1);
+  });
+
+  it("says nothing about a bridge that never answered — only a real answer has a message", async () => {
+    const transport = make({
+      endpoint: ENDPOINT,
+      fetchImpl: failingFetch(),
+      storage: createFakeStorage(),
+    });
+
+    await expect(transport.create(makeEntry())).resolves.toEqual({ ok: false, queued: true });
+  });
+
+  it("falls back to the status when a non-2xx answer carries no message of its own", async () => {
+    const transport = make({
+      endpoint: ENDPOINT,
+      fetchImpl: vi.fn<typeof fetch>(async () => jsonResponse({ ok: false }, 503)),
+      storage: createFakeStorage(),
+    });
+
+    await expect(transport.create(makeEntry())).resolves.toEqual({
+      ok: false,
+      queued: true,
+      error: "bridge answered 503",
+    });
   });
 
   it("retries the queue with exponential backoff 1s, 2s, 4s … capped at 30s", async () => {
@@ -276,9 +307,53 @@ describe("createTransport", () => {
 
     await transport.create(makeEntry());
     expect(bodyOf(fetchImpl.mock.calls[0]!).project).toBe("/Users/me/app");
+  });
 
-    await transport.create(makeEntry({ id: "entry-2", project: "/Users/me/other" }));
-    expect(bodyOf(fetchImpl.mock.calls[1]!).project).toBe("/Users/me/other");
+  /**
+   * The configured project is the adapter's own; an entry's `project` is data,
+   * and data reaches this transport from the durable queue — storage something
+   * other than this adapter may be able to write (a content script shares the
+   * page's localStorage unless it is handed another). Letting the entry win
+   * would make that queue a way to choose which directory notes are filed in.
+   */
+  it("overrides an entry's own project with the configured one", async () => {
+    const fetchImpl = okFetch();
+    const transport = make({
+      endpoint: ENDPOINT,
+      project: "/Users/me/app",
+      fetchImpl,
+      storage: createFakeStorage(),
+    });
+
+    await transport.create(makeEntry({ id: "entry-2", project: "/Users/me/somewhere-else" }));
+    expect(bodyOf(fetchImpl.mock.calls[0]!).project).toBe("/Users/me/app");
+  });
+
+  it("leaves an entry's project alone when nothing is configured", async () => {
+    const fetchImpl = okFetch();
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage: createFakeStorage() });
+
+    await transport.create(makeEntry({ project: "/Users/me/app" }));
+    expect(bodyOf(fetchImpl.mock.calls[0]!).project).toBe("/Users/me/app");
+  });
+
+  /** The attack the override closes, end to end: a queue restored from storage
+   *  the adapter does not exclusively own cannot redirect a flush. */
+  it("a queued entry restored from storage cannot pick its own destination", async () => {
+    const forged = makeEntry({ id: "forged", project: "/Users/me/somewhere-else" });
+    const fetchImpl = okFetch();
+    const transport = make({
+      endpoint: ENDPOINT,
+      project: "/Users/me/app",
+      fetchImpl,
+      storage: createFakeStorage({ [QUEUE_KEY]: JSON.stringify([forged]) }),
+    });
+
+    await transport.flush();
+    expect(bodyOf(fetchImpl.mock.calls[0]!)).toMatchObject({
+      id: "forged",
+      project: "/Users/me/app",
+    });
   });
 
   it("carries project on list() and remove() so reads and deletes hit the same inbox", async () => {

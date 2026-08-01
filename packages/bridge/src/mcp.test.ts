@@ -19,8 +19,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, it } from "vitest";
-import { BusyError, type ReviewOutcome } from "./broker.js";
-import { createMcpServer, httpTools, type ReviewTools } from "./mcp.js";
+import { BusyError, createReviewBroker, type ReviewOutcome } from "./broker.js";
+import { createMcpServer, httpTools, inProcessTools, type ReviewTools } from "./mcp.js";
+import { createBridgeServer } from "./server.js";
 import { inboxPath } from "./storage.js";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
@@ -238,12 +239,7 @@ it("daemon mode: an inbox change over HTTP notifies the connected MCP client", a
 });
 
 /** An MCP client wired to a server in this process — no spawn, no HTTP. */
-async function linked(requestReview: ReviewTools["requestReview"]): Promise<Client> {
-  const tools: ReviewTools = {
-    listFeedback: () => Promise.resolve({ entries: [] }),
-    resolveFeedback: () => Promise.resolve({ ok: true }),
-    requestReview,
-  };
+async function linkedTools(tools: ReviewTools): Promise<Client> {
   const server = createMcpServer(tools, { progressMs: 25 });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
@@ -251,6 +247,14 @@ async function linked(requestReview: ReviewTools["requestReview"]): Promise<Clie
   clients.push(client);
   await client.connect(clientSide);
   return client;
+}
+
+async function linked(requestReview: ReviewTools["requestReview"]): Promise<Client> {
+  return linkedTools({
+    listFeedback: () => Promise.resolve({ entries: [] }),
+    resolveFeedback: () => Promise.resolve({ ok: true }),
+    requestReview,
+  });
 }
 
 it("reports a busy project as a 'busy' tool error", async () => {
@@ -295,6 +299,96 @@ it("keeps a held request_review alive with progress notifications until it resol
   const seen = messages.length;
   await new Promise((done) => setTimeout(done, 100));
   expect(messages.length).toBe(seen);
+});
+
+/**
+ * The client's own cancellation — `notifications/cancelled`, which is what Esc
+ * in Claude Code sends. The review must end there, in BOTH process modes: the
+ * agent that asked is gone, nobody will ever read the outcome, and a review
+ * left pending wedges the project as `busy` (for `timeoutSeconds` — ten minutes
+ * by default) with the page's review banner still up.
+ */
+const cancelled = /cancel|abort/i;
+
+it("daemon mode: cancelling request_review frees the project and stands the banner down", async () => {
+  const dir = await tempProject();
+  const broker = createReviewBroker();
+  const cancelledEvents: string[] = [];
+  const unsubscribe = broker.subscribe(dir, {
+    send: (event) => cancelledEvents.push(event),
+  });
+  const client = await linkedTools(inProcessTools(broker, dir));
+
+  const controller = new AbortController();
+  const call = client.callTool(
+    { name: "request_review", arguments: { prompt: "look at the hero", timeoutSeconds: 600 } },
+    undefined,
+    { signal: controller.signal },
+  );
+  await waitUntil(() => cancelledEvents.includes("review-requested"), "the review to be announced");
+
+  controller.abort();
+  await expect(call).rejects.toThrow(cancelled);
+
+  // The page is told, so the banner comes down rather than waiting out 600s.
+  await waitUntil(() => cancelledEvents.includes("review-cancelled"), "the page to be told");
+
+  // And the project is free AT ONCE — a `busy` here would be the wedge.
+  unsubscribe();
+  expect(await callJson(client, "request_review", { prompt: "still working?" })).toEqual({
+    verdict: "no-reviewer",
+    entries: [],
+    durationMs: 0,
+  });
+
+  broker.stop();
+});
+
+it("proxy mode: cancelling request_review drops the held HTTP call, which frees the daemon", async () => {
+  const dir = await tempProject();
+  const bridge = createBridgeServer({ port: 0, defaultProject: dir });
+  await bridge.start();
+  const events: string[] = [];
+  const unsubscribe = bridge.broker.subscribe(dir, { send: (event) => events.push(event) });
+
+  try {
+    const client = await linkedTools(httpTools(`http://127.0.0.1:${bridge.port}`, dir));
+
+    const controller = new AbortController();
+    const call = client.callTool(
+      { name: "request_review", arguments: { prompt: "look at the hero", timeoutSeconds: 600 } },
+      undefined,
+      { signal: controller.signal },
+    );
+    await waitUntil(() => events.includes("review-requested"), "the review to be announced");
+
+    controller.abort();
+    await expect(call).rejects.toThrow(cancelled);
+    await waitUntil(() => events.includes("review-cancelled"), "the daemon to end the review");
+
+    unsubscribe();
+    expect(await callJson(client, "request_review", { prompt: "still working?" })).toEqual({
+      verdict: "no-reviewer",
+      entries: [],
+      durationMs: 0,
+    });
+  } finally {
+    await bridge.stop();
+  }
+});
+
+it("rejects a timeoutSeconds of Infinity, the way the HTTP boundary does", async () => {
+  const client = await linked(() =>
+    Promise.resolve({ verdict: "approved" as const, entries: [], durationMs: 1 }),
+  );
+
+  const result = (await client.callTool({
+    name: "request_review",
+    arguments: { prompt: "forever?", timeoutSeconds: Number.POSITIVE_INFINITY },
+  })) as { isError?: boolean; content: { text: string }[] };
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0]!.text).toContain("positive number");
 });
 
 it("fails a proxied call when the daemon dies mid-response instead of hanging", async () => {
