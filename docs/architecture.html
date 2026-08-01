@@ -1,0 +1,940 @@
+<title>fix-ui — how it works</title>
+
+<style>
+  :root {
+    --ground:      #f7f7f8;
+    --surface:     #ffffff;
+    --surface-2:   #f0f0f2;
+    --ink:         #17171a;
+    --ink-2:       #55555f;
+    --ink-3:       #85858f;
+    --rule:        #dededf;
+    --rule-2:      #c6c6ca;
+    --human:       #d94e1f;
+    --human-bg:    #fdf0ea;
+    --agent:       #0d8377;
+    --agent-bg:    #e6f4f2;
+    --danger:      #b4231a;
+    --danger-bg:   #fdeceb;
+
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --step--1: 0.8125rem;
+    --step-0:  1.0625rem;
+    --step-1:  1.375rem;
+    --step-2:  1.875rem;
+    --step-3:  2.5rem;
+    --step-4:  3.25rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:    #131316;
+      --surface:   #1b1b20;
+      --surface-2: #232329;
+      --ink:       #e9e9ec;
+      --ink-2:     #a6a6b0;
+      --ink-3:     #74747e;
+      --rule:      #2e2e35;
+      --rule-2:    #43434c;
+      --human:     #ff7847;
+      --human-bg:  #2a1710;
+      --agent:     #3ec2b2;
+      --agent-bg:  #0f2422;
+      --danger:    #ff6b5e;
+      --danger-bg: #2b1310;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:    #131316;
+    --surface:   #1b1b20;
+    --surface-2: #232329;
+    --ink:       #e9e9ec;
+    --ink-2:     #a6a6b0;
+    --ink-3:     #74747e;
+    --rule:      #2e2e35;
+    --rule-2:    #43434c;
+    --human:     #ff7847;
+    --human-bg:  #2a1710;
+    --agent:     #3ec2b2;
+    --agent-bg:  #0f2422;
+    --danger:    #ff6b5e;
+    --danger-bg: #2b1310;
+  }
+
+  :root[data-theme="light"] {
+    --ground:    #f7f7f8;
+    --surface:   #ffffff;
+    --surface-2: #f0f0f2;
+    --ink:       #17171a;
+    --ink-2:     #55555f;
+    --ink-3:     #85858f;
+    --rule:      #dededf;
+    --rule-2:    #c6c6ca;
+    --human:     #d94e1f;
+    --human-bg:  #fdf0ea;
+    --agent:     #0d8377;
+    --agent-bg:  #e6f4f2;
+    --danger:    #b4231a;
+    --danger-bg: #fdeceb;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--step-0);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 61rem; margin: 0 auto; padding: 0 1.5rem 6rem; }
+  .col  { max-width: 38rem; }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    padding: 4.5rem 0 2.5rem;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 3rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 1.25rem;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-size: var(--step-4);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    font-weight: 400;
+    text-wrap: balance;
+    margin-bottom: 1rem;
+  }
+  h1 em { font-style: italic; color: var(--human); }
+  .standfirst {
+    font-size: var(--step-1);
+    line-height: 1.45;
+    color: var(--ink-2);
+    max-width: 34rem;
+    text-wrap: pretty;
+  }
+  .masthead-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 2rem;
+    margin-top: 2rem;
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+  .masthead-meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* ---------- structure ---------- */
+
+  section { margin-bottom: 4.5rem; }
+
+  .sec-head {
+    display: grid;
+    grid-template-columns: 3.5rem 1fr;
+    gap: 0 1rem;
+    align-items: baseline;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    margin-bottom: 1.75rem;
+  }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--ink-3);
+    letter-spacing: 0.08em;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-size: var(--step-2);
+    line-height: 1.15;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+  }
+  .sec-head p {
+    grid-column: 2;
+    color: var(--ink-2);
+    margin-top: 0.5rem;
+    max-width: 34rem;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: var(--step-0);
+    font-weight: 650;
+    letter-spacing: -0.005em;
+    margin: 2.25rem 0 0.625rem;
+  }
+
+  p { margin-bottom: 1rem; max-width: 38rem; text-wrap: pretty; }
+  .col > p:last-child { margin-bottom: 0; }
+
+  a { color: var(--human); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--human);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.075em 0.35em;
+    white-space: nowrap;
+  }
+  strong { font-weight: 650; }
+
+  /* ---------- figures ---------- */
+
+  figure {
+    margin: 2rem 0;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  figcaption {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-2);
+  }
+  .fig-body { padding: 1.75rem 1.25rem; overflow-x: auto; }
+
+  /* ---------- system map ---------- */
+
+  .map {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(9.5rem, 1fr));
+    gap: 0.75rem;
+    align-items: stretch;
+    min-width: 44rem;
+  }
+  .node {
+    border: 1px solid var(--rule-2);
+    border-radius: 5px;
+    background: var(--surface);
+    padding: 0.875rem 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .node-label {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .node-name { font-weight: 650; font-size: 0.9375rem; line-height: 1.25; }
+  .node-note { font-size: 0.8125rem; color: var(--ink-2); line-height: 1.4; }
+  .node.browser { border-color: var(--human); box-shadow: inset 0 2px 0 var(--human); }
+  .node.machine { border-color: var(--rule-2); }
+  .node.agentn  { border-color: var(--agent); box-shadow: inset 0 2px 0 var(--agent); }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(9.5rem, 1fr));
+    gap: 0.75rem;
+    min-width: 44rem;
+    margin-top: 0.75rem;
+  }
+  .arrow {
+    grid-column: span 1;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    color: var(--ink-3);
+    text-align: center;
+    padding: 0.35rem 0;
+    letter-spacing: 0.04em;
+  }
+  .arrow.human { color: var(--human); }
+  .arrow.agent { color: var(--agent); }
+
+  /* ---------- lanes ---------- */
+
+  .lanes { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 46rem) { .lanes { grid-template-columns: 1fr; } }
+
+  .lane { border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+  .lane-head {
+    padding: 0.75rem 1rem;
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--rule);
+  }
+  .lane.h .lane-head { background: var(--human-bg); color: var(--human); }
+  .lane.a .lane-head { background: var(--agent-bg); color: var(--agent); }
+  .lane-body { padding: 0.25rem 0; }
+
+  ol.steps { list-style: none; }
+  ol.steps li {
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: 0 0.75rem;
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    align-items: start;
+  }
+  ol.steps li:last-child { border-bottom: 0; }
+  .step-n {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--ink-3);
+    padding-top: 0.2rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .lane.h .step-n { color: var(--human); }
+  .lane.a .step-n { color: var(--agent); }
+  .step-body { font-size: 0.9375rem; line-height: 1.5; }
+  .step-body b { display: block; font-weight: 650; margin-bottom: 0.15rem; }
+  .step-body span { color: var(--ink-2); }
+  .step-body code { white-space: normal; }
+
+  /* ---------- code blocks ---------- */
+
+  pre {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    line-height: 1.65;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 1rem 1.15rem;
+    overflow-x: auto;
+    margin: 1.25rem 0;
+  }
+  pre .c { color: var(--ink-3); }
+  pre .k { color: var(--human); }
+  pre .a { color: var(--agent); }
+
+  /* ---------- tables ---------- */
+
+  .table-wrap { overflow-x: auto; margin: 1.5rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 33rem; font-size: 0.9375rem; }
+  th, td {
+    text-align: left;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    border-bottom-color: var(--rule-2);
+  }
+  td code { white-space: nowrap; }
+  td.mono { font-family: var(--mono); font-size: 0.8125rem; }
+  .yes { color: var(--agent); font-weight: 650; }
+  .no  { color: var(--ink-3); }
+
+  /* ---------- callouts ---------- */
+
+  .note {
+    border-left: 3px solid var(--rule-2);
+    padding: 0.25rem 0 0.25rem 1.25rem;
+    margin: 1.5rem 0;
+    color: var(--ink-2);
+    font-size: 0.9375rem;
+    max-width: 38rem;
+  }
+  .note b { color: var(--ink); }
+  .note.warn { border-left-color: var(--danger); }
+  .note.warn b { color: var(--danger); }
+  .note.human { border-left-color: var(--human); }
+
+  /* ---------- security grid ---------- */
+
+  .gates { display: grid; gap: 0.75rem; grid-template-columns: 1fr 1fr; margin: 1.5rem 0; }
+  @media (max-width: 46rem) { .gates { grid-template-columns: 1fr; } }
+  .gate {
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 1rem 1.1rem;
+    background: var(--surface);
+  }
+  .gate-tag {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+  .gate.closed .gate-tag { color: var(--agent); }
+  .gate.open   .gate-tag { color: var(--danger); }
+  .gate h4 { font-size: 0.9375rem; font-weight: 650; margin-bottom: 0.35rem; }
+  .gate p { font-size: 0.875rem; color: var(--ink-2); margin: 0; max-width: none; }
+
+  /* ---------- misc ---------- */
+
+  .kicker {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 2.5rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  ul.plain { list-style: none; max-width: 38rem; }
+  ul.plain li {
+    padding-left: 1.15rem;
+    position: relative;
+    margin-bottom: 0.6rem;
+    color: var(--ink-2);
+  }
+  ul.plain li::before {
+    content: "—";
+    position: absolute;
+    left: 0;
+    color: var(--ink-3);
+  }
+  ul.plain li b { color: var(--ink); font-weight: 650; }
+
+  footer {
+    border-top: 2px solid var(--ink);
+    padding-top: 1.5rem;
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    color: var(--ink-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 2rem;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color 120ms ease; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">fix-ui · architecture · v1</div>
+    <h1>Point at what's wrong.<br><em>Your coding agent fixes it.</em></h1>
+    <p class="standfirst">
+      How the pieces fit, what runs where, and what the agent is actually doing
+      when you type <code>fix ui</code>.
+    </p>
+    <div class="masthead-meta">
+      <span><b>Runs on</b> your machine only</span>
+      <span><b>Default port</b> 127.0.0.1:3499</span>
+      <span><b>Inbox</b> .fix-ui.jsonl</span>
+    </div>
+  </header>
+
+  <!-- ============ 1 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">01</div>
+      <div>
+        <h2>Four parts and one file</h2>
+        <p>
+          The file is the important one. Everything else exists to put lines in
+          it, or to take lines out.
+        </p>
+      </div>
+    </div>
+
+    <figure>
+      <figcaption>System map — left to right is one note's journey</figcaption>
+      <div class="fig-body">
+        <div class="map">
+          <div class="node browser">
+            <div class="node-label">In your browser</div>
+            <div class="node-name">The picker</div>
+            <div class="node-note">Highlight box, note popover, saved-notes panel. Arrives either as an npm package in your own app, or injected by the Chrome extension into any site.</div>
+          </div>
+          <div class="node machine">
+            <div class="node-label">On your machine</div>
+            <div class="node-name">The bridge</div>
+            <div class="node-note">A small local daemon. Speaks HTTP to browsers and MCP to agents. Owns the inbox files and the review broker.</div>
+          </div>
+          <div class="node machine">
+            <div class="node-label">In your project</div>
+            <div class="node-name">.fix-ui.jsonl</div>
+            <div class="node-note">One JSON object per line, sitting next to your package.json. This is the contract — anything that can read a file can participate.</div>
+          </div>
+          <div class="node agentn">
+            <div class="node-label">In your terminal</div>
+            <div class="node-name">The agent</div>
+            <div class="node-note">Claude Code, or anything that speaks MCP or can read a file. Reads entries, fixes them, deletes them.</div>
+          </div>
+        </div>
+        <div class="flow">
+          <div class="arrow human">pick + note ──▶</div>
+          <div class="arrow human">POST /entries ──▶</div>
+          <div class="arrow human">one line appended ──▶</div>
+          <div class="arrow agent">◀── request_review</div>
+        </div>
+      </div>
+    </figure>
+
+    <div class="col">
+      <p>
+        Two adapters share one core, so the picker behaves identically whichever
+        way it arrives. The embed reaches every user of an app that ships it,
+        including browsers with no extension installed. The extension reaches
+        every <em>site</em> without shipping anything. Neither one talks to your
+        filesystem — only the bridge does.
+      </p>
+    </div>
+
+    <h3>What a note actually looks like on disk</h3>
+    <pre><span class="c">// ~/my-app/.fix-ui.jsonl — one line per note</span>
+{
+  <span class="k">"v"</span>: 1,
+  <span class="k">"note"</span>: "make this button bigger",
+  <span class="k">"selector"</span>: "#pricing button.mt-5",
+  <span class="k">"component"</span>: "PricingCard",
+  <span class="k">"elementText"</span>: "Continue",
+  <span class="k">"url"</span>: "http://localhost:3000/#pricing",
+  <span class="k">"consoleErrors"</span>: [
+    { "message": "TypeError: x is not a function", "count": 3 }
+  ]
+}</pre>
+
+    <div class="col">
+      <p>
+        The selector alone would be brittle, so every entry carries three ways to
+        find the same element: the CSS path, the framework component name, and the
+        element's own text. If the page has changed since you wrote the note, the
+        agent still has two other handles. Recent console errors ride along because
+        the thing you're complaining about and the thing that's throwing are often
+        the same thing.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">02</div>
+      <div>
+        <h2>The two directions</h2>
+        <p>
+          You start one of them. The agent starts the other. Both end with a
+          human deciding something.
+        </p>
+      </div>
+    </div>
+
+    <div class="lanes">
+      <div class="lane h">
+        <div class="lane-head">You → agent · the inbox</div>
+        <div class="lane-body">
+          <ol class="steps">
+            <li><div class="step-n">1</div><div class="step-body"><b>You arm the picker</b><span>Click the floating chip, or the extension's toolbar button. Nothing is injected into any page until you do.</span></div></li>
+            <li><div class="step-n">2</div><div class="step-body"><b>You click an element</b><span>The whole pointer sequence is suppressed, so the button you're pointing at doesn't fire. A popover opens.</span></div></li>
+            <li><div class="step-n">3</div><div class="step-body"><b>You type a note and save</b><span>The picker builds the entry and <code>POST</code>s it to the bridge. Bridge down? It queues and retries.</span></div></li>
+            <li><div class="step-n">4</div><div class="step-body"><b>The bridge appends a line</b><span>It routes to the right project, strips the routing field, and appends to that project's <code>.fix-ui.jsonl</code>.</span></div></li>
+            <li><div class="step-n">5</div><div class="step-body"><b>You type "fix ui"</b><span>The agent calls <code>list_feedback</code> — or just reads the file. Both work; the file is the contract.</span></div></li>
+            <li><div class="step-n">6</div><div class="step-body"><b>It fixes and clears</b><span><code>resolve_feedback(id)</code> removes the line. No tombstone — the inbox is a queue, not a log.</span></div></li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="lane a">
+        <div class="lane-head">Agent → you · the review</div>
+        <div class="lane-body">
+          <ol class="steps">
+            <li><div class="step-n">1</div><div class="step-body"><b>The agent asks for eyes</b><span>After changing UI it calls <code>request_review</code>. <b style="display:inline">That call blocks.</b> Its turn is suspended.</span></div></li>
+            <li><div class="step-n">2</div><div class="step-body"><b>The bridge holds it open</b><span>It doesn't answer yet. It pushes an event down the SSE stream your page is subscribed to.</span></div></li>
+            <li><div class="step-n">3</div><div class="step-body"><b>Your page wakes itself up</b><span>Banner appears with the agent's prompt, picker arms itself. You never hunt for the chip.</span></div></li>
+            <li><div class="step-n">4</div><div class="step-body"><b>You look, and click around</b><span>Drop notes on anything wrong. They're ordinary entries; the page remembers which ones are part of this review.</span></div></li>
+            <li><div class="step-n">5</div><div class="step-body"><b>You approve or request changes</b><span>The verdict POSTs back with the ids of the notes you left.</span></div></li>
+            <li><div class="step-n">6</div><div class="step-body"><b>The agent's call returns</b><span>It resumes <em>the same turn</em> holding your verdict and your notes. Nothing was pushed at it — it was waiting.</span></div></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="note human">
+      <b>Why the blocking call matters.</b> An MCP server cannot start a conversation
+      with an agent — tools are agent-initiated, always. So "the agent somehow knows
+      what you clicked" is never a push. It's a call the agent made, suspended, and
+      your click is the return value. Every part of this design follows from that
+      one fact.
+    </div>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">03</div>
+      <div>
+        <h2>Where the bridge actually runs</h2>
+        <p>
+          On your machine, as a Node process, started one of two ways — and it
+          works out for itself which one it is.
+        </p>
+      </div>
+    </div>
+
+    <div class="col">
+      <p>
+        There is no server anywhere. The bridge binds <code>127.0.0.1</code> only,
+        which means nothing outside your machine can reach it — not your network,
+        not the internet. It stores nothing but the files already in your project.
+      </p>
+      <p>
+        The wrinkle is that it has two completely different callers. Browsers need
+        HTTP. Agents need MCP over stdio. So one process serves both, and how it
+        was started decides how it behaves.
+      </p>
+    </div>
+
+    <figure>
+      <figcaption>Two ways it starts — the process decides by looking at its own stdin</figcaption>
+      <div class="fig-body">
+        <div class="lanes">
+          <div class="lane h">
+            <div class="lane-head">You started it in a terminal</div>
+            <div class="lane-body">
+              <ol class="steps">
+                <li><div class="step-n">·</div><div class="step-body"><b>make run</b><span>stdin is a TTY, so it knows a human is watching.</span></div></li>
+                <li><div class="step-n">·</div><div class="step-body"><b>Serves HTTP only</b><span>No MCP wiring — nobody is speaking protocol at it.</span></div></li>
+                <li><div class="step-n">·</div><div class="step-body"><b>Logs to stdout</b><span>Prints its URL and review token where you can read them.</span></div></li>
+              </ol>
+            </div>
+          </div>
+          <div class="lane a">
+            <div class="lane-head">Claude Code started it</div>
+            <div class="lane-body">
+              <ol class="steps">
+                <li><div class="step-n">·</div><div class="step-body"><b>Spawned as an MCP server</b><span>stdin is a pipe, not a TTY — so it wires up MCP.</span></div></li>
+                <li><div class="step-n">·</div><div class="step-body"><b>Serves HTTP and MCP</b><span>Same process, both callers, one broker.</span></div></li>
+                <li><div class="step-n">·</div><div class="step-body"><b>Logs to stderr</b><span>Because stdout now belongs to the MCP protocol. A stray <code>console.log</code> would corrupt the stream.</span></div></li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </figure>
+
+    <h3>What happens with three Claude Code sessions open</h3>
+    <div class="col">
+      <p>
+        Each session spawns its own bridge process. They cannot all own port 3499,
+        and you would not want three processes writing the same files. So they
+        arbitrate:
+      </p>
+    </div>
+
+    <figure>
+      <figcaption>Daemon or proxy — decided at startup, no configuration</figcaption>
+      <div class="fig-body">
+<pre>process starts
+  │
+  ├─ <span class="a">binds :3499 successfully</span>
+  │     └─▶ <b>DAEMON</b> — owns the inbox files, the review broker,
+  │           the SSE subscribers and the token.
+  │
+  └─ <span class="k">port already in use</span>
+        │
+        ├─ probes <span class="k">GET /healthz</span> → is it one of ours?
+        │
+        ├─ <span class="a">yes</span> ─▶ <b>PROXY</b> — still serves MCP on its own stdio,
+        │            but forwards every tool call over HTTP to the
+        │            daemon, scoped to its own project directory.
+        │
+        └─ <span class="k">no</span>  ─▶ exits with an error. Something else has :3499.</pre>
+      </div>
+    </figure>
+
+    <div class="col">
+      <p>
+        The upshot: one daemon serves every project on the machine, and each
+        session's own process makes sure its tool calls land against the right
+        directory. You never think about it — but it's why the second session
+        doesn't crash, and why you can have one browser tab open against two
+        different projects.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">04</div>
+      <div>
+        <h2>What you need installed</h2>
+        <p>
+          Node is required — the bridge is a Node process. Where it's required
+          depends on which half you mean.
+        </p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>To do this</th><th>Node</th><th>pnpm</th><th>Chrome</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Run the bridge</b></td>
+            <td class="yes">yes</td><td class="no">—</td><td class="no">—</td>
+            <td>Node 20+. It is a Node process; there is no way around this one.</td>
+          </tr>
+          <tr>
+            <td><b>Use the Chrome extension</b></td>
+            <td class="yes">yes</td><td class="no">—</td><td class="yes">yes</td>
+            <td>The extension itself runs inside Chrome and needs nothing. But it posts to the bridge, so the bridge still has to be running.</td>
+          </tr>
+          <tr>
+            <td><b>Use the npm embed</b></td>
+            <td class="yes">yes</td><td class="no">—</td><td class="no">—</td>
+            <td>Your app already needs Node to build. Can run bridge-less against your own API route.</td>
+          </tr>
+          <tr>
+            <td><b>Build from source</b></td>
+            <td class="yes">yes</td><td class="yes">yes</td><td class="no">—</td>
+            <td>pnpm 9+ for the workspace. Chromium downloads on demand, for tests only.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <b>The bridge-less escape hatch.</b> The embed can POST to any endpoint you
+      give it, so an app that already has a dev API route can skip the bridge
+      entirely and write its own inbox file. You lose the review direction — that
+      needs the broker — but the "point, note, fix ui" loop works with no daemon
+      at all.
+    </div>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">05</div>
+      <div>
+        <h2>Building it, and loading it into Chrome</h2>
+        <p>
+          One command builds everything. The only thing worth memorizing is
+          which directory Chrome wants.
+        </p>
+      </div>
+    </div>
+
+    <pre><span class="c"># everything: bridge daemon, Chrome extension, npm tarballs</span>
+make build
+
+<span class="c"># it prints where each artifact landed</span>
+built:
+  bridge     packages/bridge/dist/cli.js
+  extension  <span class="k">/…/fix-ui/extension</span>
+             ^ load THIS directory in chrome://extensions, not extension/dist
+  tarballs   dist/</pre>
+
+    <div class="note warn">
+      <b>Load <code>extension/</code>, not <code>extension/dist/</code>.</b>
+      This is the one thing that trips everybody. The compiled bundles land in
+      <code>extension/dist/</code>, but <code>manifest.json</code> sits one level
+      above them and points down into dist. Chrome needs the folder containing the
+      manifest — aim it at <code>dist/</code> and you get
+      <em>"manifest file is missing"</em>.
+    </div>
+
+    <h3>The whole setup, once</h3>
+    <pre><span class="c">1 · build</span>
+make build
+
+<span class="c">2 · load into Chrome</span>
+chrome://extensions → Developer mode ON → Load unpacked → pick <span class="k">extension/</span>
+<span class="c">   (no icon ships in v1 — it's the default puzzle piece; pin it)</span>
+
+<span class="c">3 · start the bridge in the project you want fixed</span>
+cd ~/my-app && make -C ~/fix-ui run PROJECT=$PWD
+<span class="c">   → prints:  listening on http://127.0.0.1:3499</span>
+<span class="c">   → prints:  review token: d1G2K-jRF79… (also in .fix-ui.token)</span>
+
+<span class="c">4 · point the extension at it — right-click the icon → Options</span>
+Bridge URL     http://127.0.0.1:3499
+Review token   <span class="c">paste from .fix-ui.token</span>
+Origins → projects
+               http://localhost:3000=/Users/you/my-app
+               https://staging.example.com=/Users/you/my-app</pre>
+
+    <div class="col">
+      <p>
+        That last field is what makes a note from a given site land in the right
+        project. An unmapped origin falls back to whichever directory the daemon
+        was started in — fine when you're working on one thing, ambiguous when
+        you're not.
+      </p>
+      <p>
+        Then: click the toolbar button to arm the picker, click an element, type,
+        save. Click the button again to stop. Nothing is injected into any page
+        until you press it — there's no content script in the manifest, so the
+        extension is inert everywhere until asked.
+      </p>
+    </div>
+
+    <div class="kicker">Other things the Makefile knows</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">make</td><td>Lists every target.</td></tr>
+          <tr><td class="mono">make check</td><td>The full gate — typecheck, unit and contract suites, then the browser suite.</td></tr>
+          <tr><td class="mono">make test</td><td>Unit and contract only. Fast, no browser needed.</td></tr>
+          <tr><td class="mono">make e2e</td><td>Playwright, in a real Chromium.</td></tr>
+          <tr><td class="mono">make run</td><td>The bridge, in the foreground, printing its URL and token.</td></tr>
+          <tr><td class="mono">make extension-path</td><td>Prints the directory to hand to Chrome.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 6 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">06</div>
+      <div>
+        <h2>The trust boundary</h2>
+        <p>
+          A local daemon that any page can reach, feeding a file your coding
+          agent acts on. That deserves saying out loud.
+        </p>
+      </div>
+    </div>
+
+    <div class="col">
+      <p>
+        The bridge has permissive CORS on purpose: the embed runs on whatever
+        origin your dev server uses and the extension injects into arbitrary
+        sites, so there is no origin allowlist that could be written. The
+        consequence is that <strong>while the daemon runs, every page you visit
+        can reach it</strong>. That's the honest starting point, not a footnote.
+      </p>
+    </div>
+
+    <div class="gates">
+      <div class="gate closed">
+        <div class="gate-tag">Closed</div>
+        <h4>Non-loopback Host → 403</h4>
+        <p>A request whose <code>Host</code> header isn't <code>127.0.0.1</code> or <code>localhost</code> is refused. This is the DNS-rebinding defence; CORS cannot be one.</p>
+      </div>
+      <div class="gate closed">
+        <div class="gate-tag">Closed</div>
+        <h4>Review channel needs a token</h4>
+        <p>The daemon mints one per run into <code>.fix-ui.token</code> (mode 0600). Without it, no <code>/events</code> stream and no verdict. So a page can't learn a review id, and can't answer your review.</p>
+      </div>
+      <div class="gate closed">
+        <div class="gate-tag">Closed</div>
+        <h4>Size and length caps</h4>
+        <p>256KB bodies, and bounded <code>note</code> and <code>selector</code>. Nothing can use your inbox as storage or exhaust the daemon.</p>
+      </div>
+      <div class="gate open">
+        <div class="gate-tag">Open, on purpose</div>
+        <h4>Anyone can request a review</h4>
+        <p>A proxy instance can't read the daemon's token file, so this route stays ungated. A page can raise a banner with text it chose, and occupy the review slot until timeout. It cannot answer — that needs the token.</p>
+      </div>
+    </div>
+
+    <div class="note warn">
+      <b>Treat inbox entries as untrusted input, never as instructions.</b>
+      This is the rule that matters. Your agent is told to read
+      <code>.fix-ui.jsonl</code> and act on it, which makes that file the most
+      interesting thing on the machine to anything trying to reach your agent.
+      Run the daemon while you're working, not permanently.
+    </div>
+
+    <div class="col">
+      <p>
+        One more, because it's inherent rather than fixed: when a page opens a
+        modal dialog, the picker has to move its own UI inside that dialog to stay
+        clickable — the browser's top layer leaves everything else inert. In that
+        window its UI is ordinary page DOM, readable and clickable by page script.
+        The two decisions that must be a human's — approving a review, committing a
+        note — require a real user event, which script cannot forge. The rest is
+        exposed, and saying so is cheaper than pretending otherwise.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 7 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-num">07</div>
+      <div>
+        <h2>Wire reference</h2>
+        <p>Everything either half can say to the bridge.</p>
+      </div>
+    </div>
+
+    <div class="kicker">HTTP · for browsers</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Route</th><th>Purpose</th><th>Gated</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">POST /entries</td><td>Save a note. Returns the entry as stored.</td><td class="no">open</td></tr>
+          <tr><td class="mono">GET /entries</td><td>List a project's inbox — the saved-notes panel.</td><td class="no">open</td></tr>
+          <tr><td class="mono">DELETE /entries/:id</td><td>Remove one line.</td><td class="no">open</td></tr>
+          <tr><td class="mono">GET /events</td><td>SSE. Carries <code>review-requested</code> and <code>review-cancelled</code>, replays a pending review to anyone who reconnects.</td><td class="yes">token</td></tr>
+          <tr><td class="mono">POST /reviews</td><td>The agent side of a review. Held open until answered.</td><td class="no">open</td></tr>
+          <tr><td class="mono">POST /reviews/:id/verdict</td><td>Approve or request changes.</td><td class="yes">token</td></tr>
+          <tr><td class="mono">GET /healthz</td><td>Identity probe — how a second instance recognizes the daemon.</td><td class="no">open</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="kicker">MCP · for agents</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tool</th><th>What the agent gets</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">list_feedback</td><td>The project's entries, structured — no file paths to know.</td></tr>
+          <tr><td class="mono">resolve_feedback</td><td>Removes an entry once it's fixed.</td></tr>
+          <tr><td class="mono">request_review</td><td>Blocks until you answer. Returns your verdict, the notes you left, and how long you took. Sends progress notifications while waiting so long reviews don't trip client timeouts.</td></tr>
+          <tr><td class="mono">feedback/updated</td><td>A notification, not a tool — fires when the inbox changes. It cannot start a turn; it only helps harnesses that choose to watch.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="kicker">Verdicts</div>
+    <ul class="plain">
+      <li><b>approved</b> — you're happy. The loop closes.</li>
+      <li><b>changes</b> — paired with the notes you left. This is the actionable one; the agent treats the entries as the change request and keeps working.</li>
+      <li><b>timeout</b> — nobody answered in time. A first-class outcome, not an error.</li>
+      <li><b>no-reviewer</b> — no page was listening, so the agent doesn't hang waiting for one. It falls back to asking you in the terminal.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>fix-ui v1</span>
+    <span>MIT</span>
+    <span>Full detail: docs/design.md · docs/agent-integration.md · docs/capture-format.md</span>
+    <span>Known gaps: docs/known-gaps.md</span>
+  </footer>
+
+</div>
