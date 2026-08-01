@@ -67,6 +67,9 @@ capture format never diverge.
   specifics, Codex notes.
 - [docs/capture-format.md](docs/capture-format.md) — the entry schema
   (v1: element + note + console errors; screenshots deliberately opt-in).
+- [docs/known-gaps.md](docs/known-gaps.md) — what review found, judged not
+  to block v1, and left on purpose: accepted residual risk, correctness
+  seams, coverage holes, and what must change before publishing.
 
 ## Development
 
