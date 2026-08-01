@@ -1,0 +1,26 @@
+{
+  "name": "fixui-bridge",
+  "version": "0.0.1",
+  "description": "Local daemon that stores fix-ui feedback entries in each project's .fix-ui.jsonl inbox.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "fixui-bridge": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.0"
+  }
+}
