@@ -33,9 +33,14 @@ export const test = base.extend<{ bridge: Bridge }>({
 export { expect } from "@playwright/test";
 export type { Bridge, JsonRecord } from "./bridge";
 
-/** A fixture page wired to this test's bridge and project. */
+/** A fixture page wired to this test's bridge, project and review token. */
 export function fixtureUrl(baseURL: string, file: string, bridge: Bridge): string {
-  const query = new URLSearchParams({ bridge: bridge.url, project: bridge.project });
+  const query = new URLSearchParams({
+    bridge: bridge.url,
+    project: bridge.project,
+    // A real app bakes this in at build time; a fixture page has a query string.
+    token: bridge.token,
+  });
   return `${baseURL}/${file}?${query.toString()}`;
 }
 

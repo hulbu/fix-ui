@@ -33,6 +33,9 @@
         window.fixui = FixUi.initFixUi({
           bridgeUrl,
           project: params.get("project") ?? undefined,
+          // The bridge gates its review channel; a real app bakes this in at
+          // build time, a fixture reads it off the URL.
+          token: params.get("token") ?? undefined,
         });
       }
     </script>

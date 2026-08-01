@@ -7,17 +7,21 @@ import {
   REVIEW_REQUESTED_MESSAGE,
   TOGGLE_OFF_MESSAGE,
   createSseParser,
+  deliverableTabs,
   lookupProject,
   normalizeBridgeUrl,
   originOf,
+  originsInBucket,
   parseFetchRequest,
   parseOriginMap,
   parseReviewRequested,
+  streamKeyOf,
   verdictReviewId,
   type FetchProxyResponse,
   type OriginMapping,
   type ReviewRequestMessage,
   type StoredOptions,
+  type TabStates,
 } from "./protocol";
 
 /**
@@ -44,18 +48,11 @@ const TABS_KEY = "fixui.tabs.v1";
 const CONTENT_FILE = "dist/content.js";
 const MAIN_WORLD_FILE = "dist/main-world.js";
 
-interface TabState {
-  origin: string;
-  /** From the options map; absent means "the bridge's own cwd". */
-  project?: string;
-}
-
-/** Keyed by tab id (as a string — session storage is JSON). */
-type TabStates = Record<string, TabState>;
-
 interface Stream {
   controller: AbortController;
   bridgeUrl: string;
+  /** Re-opened when this changes: a stream on a stale token is a 401. */
+  token: string;
 }
 
 /**
@@ -68,7 +65,11 @@ const pendingReviews = new Map<string, ReviewRequestMessage>();
 
 // --- stored state ----------------------------------------------------------
 
-async function readOptions(): Promise<{ bridgeUrl: string; mappings: OriginMapping[] }> {
+async function readOptions(): Promise<{
+  bridgeUrl: string;
+  mappings: OriginMapping[];
+  token: string;
+}> {
   let stored: Partial<StoredOptions> | undefined;
   try {
     stored = (await chrome.storage.sync.get(OPTIONS_KEY))[OPTIONS_KEY] as
@@ -81,7 +82,18 @@ async function readOptions(): Promise<{ bridgeUrl: string; mappings: OriginMappi
     (typeof stored?.bridgeUrl === "string" ? normalizeBridgeUrl(stored.bridgeUrl) : null) ??
     DEFAULT_BRIDGE_URL;
   const { mappings } = parseOriginMap(typeof stored?.originMap === "string" ? stored.originMap : "");
-  return { bridgeUrl, mappings };
+  const token = typeof stored?.token === "string" ? stored.token.trim() : "";
+  return { bridgeUrl, mappings, token };
+}
+
+/** `?token=` for a review-channel URL. The token never leaves the worker: a
+ *  content script lives in a tab, and this is the credential that decides
+ *  whether somebody may answer the developer's review. */
+function withToken(url: string, token: string): string {
+  if (!token) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set("token", token);
+  return parsed.href;
 }
 
 async function readTabs(): Promise<TabStates> {
@@ -101,7 +113,7 @@ async function writeTabs(tabs: TabStates): Promise<void> {
   }
 }
 
-const keyOf = (state: TabState): string => state.project ?? "";
+const keyOf = streamKeyOf;
 
 // --- toolbar action --------------------------------------------------------
 
@@ -200,12 +212,10 @@ async function onNavigated(tabId: number, url: string | undefined): Promise<void
 
 // --- review channel --------------------------------------------------------
 
+/** The tabs a review for `key` may be delivered to — the rule (and the reason
+ *  for it) lives in protocol.ts, where it is unit-tested. */
 async function tabsFor(key: string): Promise<number[]> {
-  const tabs = await readTabs();
-  return Object.entries(tabs)
-    .filter(([, state]) => keyOf(state) === key)
-    .map(([id]) => Number(id))
-    .filter((id) => Number.isInteger(id));
+  return deliverableTabs(await readTabs(), key);
 }
 
 async function broadcast(key: string, message: unknown): Promise<void> {
@@ -232,8 +242,11 @@ async function navigateFor(key: string, url: string): Promise<void> {
   const target = originOf(url);
   if (!target) return;
   const tabs = await readTabs();
+  // The same delivery rule the banner follows: a tab that may not be told about
+  // the review may certainly not be navigated by it.
+  const deliverable = new Set(await tabsFor(key));
   for (const [id, state] of Object.entries(tabs)) {
-    if (keyOf(state) !== key || state.origin !== target) continue;
+    if (!deliverable.has(Number(id)) || state.origin !== target) continue;
     try {
       await chrome.tabs.update(Number(id), { url });
     } catch {
@@ -261,10 +274,11 @@ async function pump(
   key: string,
   project: string | undefined,
   bridgeUrl: string,
+  token: string,
   controller: AbortController,
 ): Promise<void> {
   const query = project ? `?project=${encodeURIComponent(project)}` : "";
-  const response = await fetch(`${bridgeUrl}/events${query}`, {
+  const response = await fetch(withToken(`${bridgeUrl}/events${query}`, token), {
     signal: controller.signal,
     headers: { accept: "text/event-stream" },
   });
@@ -282,12 +296,17 @@ async function pump(
   }
 }
 
-function openStream(key: string, project: string | undefined, bridgeUrl: string): void {
+function openStream(
+  key: string,
+  project: string | undefined,
+  bridgeUrl: string,
+  token: string,
+): void {
   const controller = new AbortController();
   // Registered before the first await, so two overlapping syncStreams() cannot
   // open the same stream twice.
-  streams.set(key, { controller, bridgeUrl });
-  void pump(key, project, bridgeUrl, controller)
+  streams.set(key, { controller, bridgeUrl, token });
+  void pump(key, project, bridgeUrl, token, controller)
     .catch(() => {
       // Bridge down, restarted, or the worker is being torn down. The alarm
       // (and the next event of any kind) re-opens it.
@@ -323,19 +342,19 @@ async function keepAlarm(wanted: boolean): Promise<void> {
  */
 async function syncStreams(): Promise<void> {
   const tabs = await readTabs();
-  const { bridgeUrl } = await readOptions();
+  const { bridgeUrl, token } = await readOptions();
 
   const wanted = new Map<string, string | undefined>();
   for (const state of Object.values(tabs)) wanted.set(keyOf(state), state.project);
 
   for (const [key, stream] of [...streams]) {
-    if (wanted.has(key) && stream.bridgeUrl === bridgeUrl) continue;
+    if (wanted.has(key) && stream.bridgeUrl === bridgeUrl && stream.token === token) continue;
     stream.controller.abort();
     streams.delete(key);
     pendingReviews.delete(key);
   }
   for (const [key, project] of wanted) {
-    if (!streams.has(key)) openStream(key, project, bridgeUrl);
+    if (!streams.has(key)) openStream(key, project, bridgeUrl, token);
   }
   await keepAlarm(wanted.size > 0);
 }
@@ -346,13 +365,19 @@ async function handleFetch(
   message: unknown,
   respond: (response: FetchProxyResponse) => void,
 ): Promise<void> {
-  const request = parseFetchRequest(message);
+  const { bridgeUrl, token } = await readOptions();
+  const request = parseFetchRequest(message, bridgeUrl);
   if (!request) {
-    respond({ ok: false, error: "fixui: refused a request that is not for the local bridge" });
+    respond({ ok: false, error: `fixui: refused a request that is not for ${bridgeUrl}` });
     return;
   }
+  // The verdict route is token-gated, and the content script does not hold the
+  // token — the worker adds it here, on a URL it has already checked belongs to
+  // the configured bridge.
+  const reviewId = verdictReviewId(request.url);
+  const url = reviewId ? withToken(request.url, token) : request.url;
   try {
-    const response = await fetch(request.url, {
+    const response = await fetch(url, {
       method: request.method,
       headers: request.headers,
       body: request.body,
@@ -362,12 +387,9 @@ async function handleFetch(
 
     // A delivered verdict ends the review: forget it so a page reloaded later
     // is not shown a banner for a review that is already resolved.
-    if (response.ok) {
-      const reviewId = verdictReviewId(request.url);
-      if (reviewId) {
-        for (const [key, review] of pendingReviews) {
-          if (review.reviewId === reviewId) pendingReviews.delete(key);
-        }
+    if (response.ok && reviewId) {
+      for (const [key, review] of pendingReviews) {
+        if (review.reviewId === reviewId) pendingReviews.delete(key);
       }
     }
   } catch (error) {
@@ -388,7 +410,16 @@ async function handleConfig(
   const tabs = await readTabs();
   const state = tabId === undefined ? undefined : tabs[String(tabId)];
   const project = state ? state.project : lookupProject(mappings, origin);
-  const review = pendingReviews.get(project ?? "");
+  const key = project ?? "";
+  let review = pendingReviews.get(key);
+  // Same rule the broadcast follows (see tabsFor): the unmapped bucket may only
+  // replay a pending review while one origin occupies it. A tab injected a
+  // moment ago may not be in `tabs` yet, so its own origin joins the count.
+  if (review && key === "") {
+    const origins = originsInBucket(tabs, key);
+    if (origin) origins.add(origin);
+    if (origins.size > 1) review = undefined;
+  }
 
   respond({ bridgeUrl, project, review });
 }

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildEntry, validateEntry, type ConsoleError, type FeedbackEntry } from "./entry";
+import {
+  buildEntry,
+  MAX_NOTE,
+  MAX_SELECTOR,
+  validateEntry,
+  type ConsoleError,
+  type FeedbackEntry,
+} from "./entry";
 
 const validEntry: FeedbackEntry = {
   v: 1,
@@ -135,6 +142,26 @@ describe("buildEntry", () => {
     expect(entry.consoleErrors![0]!.message).toHaveLength(300);
     expect(entry.consoleErrors![0]!.source).toHaveLength(160);
     expect(validateEntry(entry)).toBe(true);
+  });
+
+  /**
+   * The bridge refuses an over-long note or selector at its HTTP boundary
+   * (packages/bridge/src/server.ts). Core has to agree, in both directions: an
+   * entry it BUILDS must always be one the bridge accepts, and one it merely
+   * validates must be rejected here rather than queued and retried forever.
+   */
+  it("caps note and selector, and refuses to validate anything past the cap", () => {
+    const entry = buildEntry(
+      { note: "x".repeat(MAX_NOTE + 500), selector: "d".repeat(MAX_SELECTOR + 500) },
+      { url: "http://x/", viewport: { width: 10, height: 20 }, userAgent: "UA" },
+    );
+
+    expect(entry.note).toHaveLength(MAX_NOTE);
+    expect(entry.selector).toHaveLength(MAX_SELECTOR);
+    expect(validateEntry(entry)).toBe(true);
+
+    expect(validateEntry({ ...validEntry, note: "x".repeat(MAX_NOTE + 1) })).toBe(false);
+    expect(validateEntry({ ...validEntry, selector: "d".repeat(MAX_SELECTOR + 1) })).toBe(false);
   });
 
   it("falls back to a generated id and the current time when no now/uuid is injected", () => {

@@ -4,9 +4,11 @@ import {
   MAX_MAIN_MESSAGE,
   createSseParser,
   decodeFetchResponse,
+  deliverableTabs,
   encodeFetchRequest,
   isAllowedBridgeUrl,
   lookupProject,
+  originsInBucket,
   normalizeBridgeUrl,
   originOf,
   parseFetchRequest,
@@ -181,7 +183,64 @@ describe("isAllowedBridgeUrl", () => {
   });
 });
 
+describe("deliverableTabs", () => {
+  const APP = "https://app.example.com";
+  const SHOP = "https://shop.example.com";
+  const NEWS = "https://news.example.com";
+
+  it("delivers a project's review to every tab mapped to it", () => {
+    const tabs = {
+      "1": { origin: APP, project: "/repo/app" },
+      "2": { origin: APP, project: "/repo/app" },
+      "3": { origin: SHOP, project: "/repo/shop" },
+    };
+    expect(deliverableTabs(tabs, "/repo/app")).toEqual([1, 2]);
+    expect(deliverableTabs(tabs, "/repo/shop")).toEqual([3]);
+    expect(deliverableTabs(tabs, "/repo/nothing")).toEqual([]);
+  });
+
+  it("delivers to the unmapped bucket while one origin occupies it", () => {
+    const tabs = { "1": { origin: APP }, "2": { origin: APP } };
+    expect(deliverableTabs(tabs, "")).toEqual([1, 2]);
+  });
+
+  /**
+   * The bug this rule exists for: every unmapped origin shares the `""` bucket,
+   * because "unmapped" only says the notes go to the bridge's own cwd. A review
+   * for that default project would raise the agent's prompt on whatever
+   * unrelated site also happens to be switched on — and an Approve clicked
+   * there resolves the real review.
+   */
+  it("refuses the unmapped bucket once a second origin joins it", () => {
+    const tabs = { "1": { origin: APP }, "2": { origin: NEWS } };
+    expect(deliverableTabs(tabs, "")).toEqual([]);
+
+    // Mapping one of them is the fix: the other is alone in the bucket again.
+    const mapped = { "1": { origin: APP, project: "/repo/app" }, "2": { origin: NEWS } };
+    expect(deliverableTabs(mapped, "")).toEqual([2]);
+    expect(deliverableTabs(mapped, "/repo/app")).toEqual([1]);
+  });
+
+  /** Mapped projects are explicit, so sharing one across origins is a choice. */
+  it("still delivers a mapped project shared by two origins", () => {
+    const tabs = {
+      "1": { origin: APP, project: "/repo/app" },
+      "2": { origin: SHOP, project: "/repo/app" },
+    };
+    expect(deliverableTabs(tabs, "/repo/app")).toEqual([1, 2]);
+  });
+
+  it("reports the origins in a bucket", () => {
+    const tabs = { "1": { origin: APP }, "2": { origin: APP }, "3": { origin: NEWS, project: "/n" } };
+    expect([...originsInBucket(tabs, "")]).toEqual([APP]);
+    expect([...originsInBucket(tabs, "/n")]).toEqual([NEWS]);
+  });
+});
+
 describe("fetch proxy shaping", () => {
+  /** What the options page configured — the ONLY destination the proxy allows. */
+  const BRIDGE = "http://127.0.0.1:3499";
+
   it("encodes a core transport POST", () => {
     const request = encodeFetchRequest("http://127.0.0.1:3499/entries", {
       method: "POST",
@@ -227,22 +286,59 @@ describe("fetch proxy shaping", () => {
       headers: { "content-type": "application/json" },
       body: '{"id":"1"}',
     });
-    expect(parseFetchRequest(JSON.parse(JSON.stringify(request)))).toEqual(request);
+    expect(parseFetchRequest(JSON.parse(JSON.stringify(request)), BRIDGE)).toEqual(request);
   });
 
   it("rejects fetch requests that are malformed or off-bridge", () => {
-    expect(parseFetchRequest(null)).toBeNull();
-    expect(parseFetchRequest({ type: "something-else", url: "http://127.0.0.1:3499/" })).toBeNull();
-    expect(parseFetchRequest({ type: "fixui:fetch" })).toBeNull();
+    expect(parseFetchRequest(null, BRIDGE)).toBeNull();
     expect(
-      parseFetchRequest({ type: "fixui:fetch", url: "https://evil.example.com", method: "GET", headers: {} }),
+      parseFetchRequest({ type: "something-else", url: "http://127.0.0.1:3499/" }, BRIDGE),
+    ).toBeNull();
+    expect(parseFetchRequest({ type: "fixui:fetch" }, BRIDGE)).toBeNull();
+    expect(
+      parseFetchRequest(
+        { type: "fixui:fetch", url: "https://evil.example.com", method: "GET", headers: {} },
+        BRIDGE,
+      ),
     ).toBeNull();
     expect(
-      parseFetchRequest({ type: "fixui:fetch", url: "http://127.0.0.1:3499/", method: 42, headers: {} }),
+      parseFetchRequest(
+        { type: "fixui:fetch", url: "http://127.0.0.1:3499/", method: 42, headers: {} },
+        BRIDGE,
+      ),
     ).toBeNull();
     expect(
-      parseFetchRequest({ type: "fixui:fetch", url: "http://127.0.0.1:3499/", method: "POST", headers: { a: 1 } }),
+      parseFetchRequest(
+        { type: "fixui:fetch", url: "http://127.0.0.1:3499/", method: "POST", headers: { a: 1 } },
+        BRIDGE,
+      ),
     ).toBeNull();
+  });
+
+  /**
+   * The check the error message always claimed: "not for the local bridge" used
+   * to mean nothing more than "some http loopback URL", so a page that could
+   * talk a content script into a proxied fetch reached every other service on
+   * the machine — an Ollama, an Elasticsearch, a Docker socket on TCP — and got
+   * the whole response body back.
+   */
+  it("refuses loopback destinations that are not the configured bridge", () => {
+    const otherPort = {
+      type: "fixui:fetch",
+      url: "http://127.0.0.1:11434/api/generate",
+      method: "POST",
+      headers: {},
+      body: '{"model":"llama3"}',
+    };
+    expect(parseFetchRequest(otherPort, BRIDGE)).toBeNull();
+    // Same port, other loopback name: still a different origin.
+    expect(
+      parseFetchRequest({ ...otherPort, url: "http://localhost:3499/entries" }, BRIDGE),
+    ).toBeNull();
+    // And the configured one still goes through, path and all.
+    expect(
+      parseFetchRequest({ ...otherPort, url: `${BRIDGE}/entries` }, BRIDGE),
+    ).not.toBeNull();
   });
 
   it("decodes a successful proxied response", () => {

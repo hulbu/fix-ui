@@ -25,6 +25,15 @@ export interface FixUiOptions {
   bridgeUrl?: string;
   /** Absolute project directory the bridge routes entries on. */
   project?: string;
+  /**
+   * The bridge's review-channel token. The daemon prints it at startup and
+   * writes it to `.fix-ui.token` in its own working directory; a page cannot
+   * read that file, so a dev build has to be handed it explicitly (an env var
+   * baked in by the bundler is the usual way). Without it `GET /events` and the
+   * verdict POST answer 401 and only the note-taking half of the loop works —
+   * which is exactly the bridge-less experience, and a fine place to be.
+   */
+  token?: string;
   accent?: string;
   chip?: boolean;
   onSaved?: (entry: FeedbackEntry) => void;
@@ -103,6 +112,7 @@ export function initFixUi(
       ? connectReviewChannel({
           bridgeUrl,
           project: options.project,
+          token: options.token,
           picker,
           fetchImpl: internals.fetchImpl,
           eventSourceImpl: EventSourceImpl,

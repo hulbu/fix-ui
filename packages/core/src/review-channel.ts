@@ -13,6 +13,15 @@ export interface ReviewChannelOptions {
   bridgeUrl: string;
   /** Absolute project directory the bridge routes on; omitted → its own cwd. */
   project?: string;
+  /**
+   * The bridge's review token (it prints one at startup and writes it to
+   * `.fix-ui.token` in its own cwd). Without it the daemon answers 401 on both
+   * halves of this channel — any page the developer visits can reach a loopback
+   * daemon, and a subscriber that learns a reviewId can answer the review in
+   * the human's place. Travels in the query string on purpose: `EventSource`
+   * cannot set headers, and a header would cost the verdict POST a preflight.
+   */
+  token?: string;
   picker: Picker;
   fetchImpl?: typeof fetch;
   eventSourceImpl?: typeof EventSource;
@@ -53,7 +62,12 @@ function navigate(raw: string): void {
 
 export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel {
   const base = opts.bridgeUrl.replace(/\/+$/, "");
-  const query = opts.project ? `?project=${encodeURIComponent(opts.project)}` : "";
+  const params = new URLSearchParams();
+  if (opts.project) params.set("project", opts.project);
+  if (opts.token) params.set("token", opts.token);
+  const search = params.toString();
+  const query = search === "" ? "" : `?${search}`;
+  const verdictQuery = opts.token ? `?token=${encodeURIComponent(opts.token)}` : "";
   const EventSourceImpl = opts.eventSourceImpl ?? globalThis.EventSource;
   const source = new EventSourceImpl(`${base}/events${query}`);
 
@@ -75,7 +89,7 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
     const impl = opts.fetchImpl ?? globalThis.fetch;
     if (typeof impl !== "function") return;
     try {
-      await impl(`${base}/reviews/${encodeURIComponent(verdict.reviewId)}/verdict`, {
+      await impl(`${base}/reviews/${encodeURIComponent(verdict.reviewId)}/verdict${verdictQuery}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ verdict: verdict.verdict, entryIds: verdict.entryIds }),

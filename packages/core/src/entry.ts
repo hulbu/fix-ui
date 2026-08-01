@@ -9,6 +9,11 @@ export const MAX_ELEMENT_TEXT = 120;
 export const MAX_CONSOLE_ERRORS = 5;
 export const MAX_CONSOLE_MESSAGE = 300;
 export const MAX_CONSOLE_SOURCE = 160;
+/** Generous for anything a person types, and small enough that nothing can use
+ *  an inbox as storage. The bridge enforces the same numbers at its own HTTP
+ *  boundary (packages/bridge/src/server.ts) — keep the two in step. */
+export const MAX_NOTE = 10_000;
+export const MAX_SELECTOR = 2000;
 
 export interface ConsoleError {
   message: string;
@@ -61,8 +66,10 @@ export function validateEntry(x: unknown): x is FeedbackEntry {
 
   if (entry.v !== 1) return false;
   if (!isFilledString(entry.id)) return false;
-  if (!isFilledString(entry.note)) return false;
-  if (!isFilledString(entry.selector)) return false;
+  // Capped as well as filled: an entry that the bridge would refuse must not be
+  // queued here, or the transport retries it with backoff forever.
+  if (!isFilledString(entry.note) || entry.note.length > MAX_NOTE) return false;
+  if (!isFilledString(entry.selector) || entry.selector.length > MAX_SELECTOR) return false;
   if (typeof entry.url !== "string") return false;
   if (typeof entry.userAgent !== "string") return false;
   if (typeof entry.createdAt !== "string") return false;
@@ -126,8 +133,8 @@ export function buildEntry(input: BuildEntryInput, env: BuildEntryEnv): Feedback
   return {
     v: 1,
     id: env.uuid?.() ?? randomId(),
-    note: input.note.trim(),
-    selector: input.selector,
+    note: input.note.trim().slice(0, MAX_NOTE),
+    selector: input.selector.slice(0, MAX_SELECTOR),
     ...(input.component ? { component: input.component } : {}),
     ...(elementText ? { elementText } : {}),
     url: env.url,

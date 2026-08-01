@@ -13,6 +13,7 @@ import {
  */
 const form = document.getElementById("options") as HTMLFormElement;
 const bridgeInput = document.getElementById("bridge") as HTMLInputElement;
+const tokenInput = document.getElementById("token") as HTMLInputElement;
 const projectsInput = document.getElementById("projects") as HTMLTextAreaElement;
 const status = document.getElementById("status") as HTMLParagraphElement;
 
@@ -31,6 +32,7 @@ async function load(): Promise<void> {
     say("Could not read your settings — showing the defaults.", "error");
   }
   bridgeInput.value = typeof stored?.bridgeUrl === "string" ? stored.bridgeUrl : DEFAULT_BRIDGE_URL;
+  tokenInput.value = typeof stored?.token === "string" ? stored.token : "";
   projectsInput.value = typeof stored?.originMap === "string" ? stored.originMap : "";
 }
 
@@ -52,7 +54,10 @@ async function save(event: SubmitEvent): Promise<void> {
   const originMap = projectsInput.value;
   const { mappings, errors } = parseOriginMap(originMap);
 
-  const options: StoredOptions = { bridgeUrl, originMap };
+  const token = tokenInput.value.trim();
+  tokenInput.value = token;
+
+  const options: StoredOptions = { bridgeUrl, originMap, token };
   try {
     await chrome.storage.sync.set({ [OPTIONS_KEY]: options });
   } catch (error) {
@@ -60,7 +65,9 @@ async function save(event: SubmitEvent): Promise<void> {
     return;
   }
 
-  const saved = `Saved. ${mappings.length} ${mappings.length === 1 ? "origin is" : "origins are"} mapped to a project.`;
+  const saved =
+    `Saved. ${mappings.length} ${mappings.length === 1 ? "origin is" : "origins are"} mapped to a project.` +
+    (token ? "" : " No review token — request_review cannot reach this browser.");
   if (errors.length === 0) {
     say(`${saved} Changes apply the next time you switch fix-ui on for a tab.`);
     return;

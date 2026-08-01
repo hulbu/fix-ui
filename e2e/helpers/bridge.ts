@@ -33,6 +33,12 @@ export interface Bridge {
   readonly port: number;
   /** The temp directory the daemon runs in — its inbox lives here. */
   readonly project: string;
+  /**
+   * The review channel's token. The daemon prints it on stderr and writes it to
+   * `.fix-ui.token` in its own cwd; adapters get it out of band, and without it
+   * `GET /events` and the verdict POST are 401.
+   */
+  readonly token: string;
   /** `.fix-ui.jsonl`, parsed. Empty until the first entry lands. */
   entries(): Promise<JsonRecord[]>;
   /** `.fix-ui.reviews.jsonl`, parsed. */
@@ -95,12 +101,16 @@ export async function startBridge(): Promise<Bridge> {
       throw new Error(`fixui-bridge exited before binding a port\nstderr: ${stderr}`);
     }
     const match = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(stderr);
-    if (match && (await healthy(match[1]!))) {
+    // The token is on the same stderr. Both lines are required before this
+    // returns: stderr arrives in chunks, and half a startup is not a bridge.
+    const tokenMatch = /review token: (\S+)/.exec(stderr);
+    if (match && tokenMatch && (await healthy(match[1]!))) {
       const url = match[1]!;
       return {
         url,
         port: Number(new URL(url).port),
         project,
+        token: tokenMatch[1]!,
         entries: () => readJsonl(path.join(project, ".fix-ui.jsonl")),
         reviews: () => readJsonl(path.join(project, ".fix-ui.reviews.jsonl")),
         stop,

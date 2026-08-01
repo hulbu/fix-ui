@@ -78,11 +78,45 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i += 1) await Promise.resolve();
 }
 
+/**
+ * An event the browser itself would have produced. Core refuses to save a note
+ * or answer a review on anything script synthesized (`isTrusted`), which is
+ * exactly the point — so a test standing in for a human reaches past the
+ * wrapper to jsdom's own event object, where the flag is an ordinary field.
+ * The getter also has to swallow the write `dispatchEvent()` is specified to
+ * make on its way through.
+ */
+function trusted<E extends Event>(event: E): E {
+  for (const symbol of Object.getOwnPropertySymbols(event)) {
+    const impl = (event as unknown as Record<symbol, object>)[symbol];
+    if (!impl || typeof impl !== "object" || !("isTrusted" in impl)) continue;
+    Object.defineProperty(impl, "isTrusted", {
+      get: () => true,
+      set: () => undefined,
+      configurable: true,
+    });
+  }
+  if (!event.isTrusted) throw new Error("could not forge isTrusted — jsdom internals moved");
+  return event;
+}
+
+function humanClick(el: Element): void {
+  el.dispatchEvent(trusted(new MouseEvent("click", { bubbles: true, cancelable: true })));
+}
+
 /** The whole pointer sequence a real click produces. */
 function clickSequence(el: Element): void {
   for (const type of ["pointerdown", "mousedown", "mouseup", "pointerup", "click"]) {
     el.dispatchEvent(
-      new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: 5, clientY: 5 }),
+      trusted(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: 5,
+          clientY: 5,
+        }),
+      ),
     );
   }
 }
@@ -94,7 +128,7 @@ async function pickAndSave(ui: { enable(): void }, note: string): Promise<void> 
   const textarea = pop.querySelector("textarea")!;
   textarea.value = note;
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  pop.querySelector<HTMLButtonElement>(`[${NS}-save]`)!.click();
+  humanClick(pop.querySelector<HTMLButtonElement>(`[${NS}-save]`)!);
   await settle();
 }
 
@@ -168,6 +202,29 @@ describe("initFixUi", () => {
     expect(fetchImpl.posts()[0]?.url).toBe("http://127.0.0.1:4000/entries");
   });
 
+  /**
+   * The bridge gates its review channel; a page cannot read `.fix-ui.token`, so
+   * a dev build has to be handed the token explicitly. Without one the notes
+   * half still works and the review half is 401 — the bridge-less experience.
+   */
+  it("passes a review token through to the channel", async () => {
+    const fetchImpl = recordingFetch();
+    init({ project: "/repo", token: "tok-123" }, { fetchImpl, eventSourceImpl });
+    await settle();
+
+    expect(FakeEventSource.instances[0]?.url).toBe(
+      `${DEFAULT_BRIDGE}/events?project=%2Frepo&token=tok-123`,
+    );
+
+    FakeEventSource.instances[0]!.emit("review-requested", { reviewId: "rev-1", prompt: "look" });
+    humanClick(document.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    await settle();
+
+    expect(fetchImpl.calls.find((call) => call.url.includes("/reviews/"))?.url).toBe(
+      `${DEFAULT_BRIDGE}/reviews/rev-1/verdict?token=tok-123`,
+    );
+  });
+
   it("is bridge-less with a custom endpoint: posts there and opens no review channel", async () => {
     const fetchImpl = recordingFetch();
     const ui = init({ endpoint: "/api/ui-feedback" }, { fetchImpl, eventSourceImpl });
@@ -214,7 +271,7 @@ describe("initFixUi", () => {
     });
 
     expect(document.querySelector(`[${NS}-banner]`)?.textContent).toContain("Does the header look right now?");
-    document.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!.click();
+    humanClick(document.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
     await settle();
 
     const verdict = fetchImpl.calls.find((call) => call.url.includes("/reviews/"));

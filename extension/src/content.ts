@@ -36,6 +36,55 @@ import {
 const INSTALLED = "__fixuiContent";
 /** How long a component-name query may stay unanswered before the next one may go. */
 const QUERY_TIMEOUT_MS = 1000;
+/** Prefix for the transport's durable queue in `chrome.storage.local`. */
+const QUEUE_PREFIX = "fixui.queue";
+
+/**
+ * The transport's durable queue, in the EXTENSION's storage.
+ *
+ * A content script shares the page's origin storage: `globalThis.localStorage`
+ * here IS the page's, and the page can write it. Core drains that queue by
+ * POSTing every entry in it, so page-authored entries would become notes the
+ * developer's agent reads and acts on — the page writing its own work orders.
+ * `chrome.storage.local` is the extension's, invisible to the page.
+ *
+ * Core's `Storage` seam is synchronous and `chrome.storage` is not, so this is
+ * a write-through cache: one read seeds it before `createTransport` (which
+ * restores the queue in its constructor), and writes update the cache
+ * immediately while the async `set` lands behind them. `local`, not `session`:
+ * the queue's whole job is to survive the reload that follows a note taken
+ * while the bridge was down.
+ *
+ * Keys stay namespaced by origin, the way per-origin `localStorage` already
+ * was. Extension storage is global, so without this a note queued on one site
+ * would be drained — and filed — by a tab on another.
+ */
+async function openQueueStorage(): Promise<Pick<Storage, "getItem" | "setItem" | "removeItem">> {
+  const scope = `${QUEUE_PREFIX}.${location.origin}.`;
+  const cache = new Map<string, string>();
+  let seeded: Record<string, unknown> = {};
+  try {
+    seeded = await chrome.storage.local.get(null);
+  } catch {
+    // No storage (permission revoked, extension reloading) — the in-memory
+    // queue still works for this page's lifetime.
+  }
+  for (const [key, value] of Object.entries(seeded)) {
+    if (key.startsWith(scope) && typeof value === "string") cache.set(key.slice(scope.length), value);
+  }
+
+  return {
+    getItem: (key) => cache.get(key) ?? null,
+    setItem: (key, value) => {
+      cache.set(key, value);
+      void chrome.storage.local.set({ [scope + key]: value }).catch(() => undefined);
+    },
+    removeItem: (key) => {
+      cache.delete(key);
+      void chrome.storage.local.remove(scope + key).catch(() => undefined);
+    },
+  };
+}
 
 interface ContentConfig {
   bridgeUrl: string;
@@ -199,6 +248,11 @@ function install(): void {
     if (!config || torn) return;
     bridgeUrl = config.bridgeUrl;
 
+    // Seeded before createTransport: the transport restores its queue in its
+    // constructor, and a cache that filled in a later tick would restore nothing.
+    const storage = await openQueueStorage();
+    if (torn) return;
+
     host = document.createElement("div");
     host.setAttribute("data-fixui-host", "");
     // Zero-size anchor: everything inside is fixed-positioned by core's CSS.
@@ -210,9 +264,7 @@ function install(): void {
       endpoint: `${config.bridgeUrl}/entries`,
       project: config.project,
       fetchImpl: bridgeFetch,
-      // Storage stays the page's localStorage (one namespaced key), the same
-      // durable queue the embed gets: a note taken while the bridge is down
-      // must survive the reload that follows.
+      storage,
       ...(clipboard ? { clipboard } : {}),
     });
 

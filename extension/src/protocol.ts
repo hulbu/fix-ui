@@ -167,6 +167,13 @@ export interface StoredOptions {
   /** Raw textarea contents — parsed with `parseOriginMap`, so a typo is
    *  reported rather than silently dropped on save. */
   originMap: string;
+  /**
+   * The bridge's review-channel token (it prints one at startup and writes it
+   * to `.fix-ui.token` in its working directory). Without it the daemon answers
+   * 401 on `GET /events` and on the verdict POST, so the agent-initiated review
+   * direction is off and note-taking still works.
+   */
+  token?: string;
 }
 
 /** Normalize what the options page collected, or null when it is unusable. */
@@ -176,6 +183,49 @@ export function normalizeBridgeUrl(input: string): string | null {
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
   if (!isAllowedBridgeUrl(withScheme)) return null;
   return new URL(withScheme).origin;
+}
+
+// --- which tabs a review may reach ------------------------------------------
+
+/** What the service worker remembers about a tab that is switched on. */
+export interface TabState {
+  /** Serialized origin, e.g. "https://app.example.com". */
+  origin: string;
+  /** From the options map; absent means "the bridge's own cwd". */
+  project?: string;
+}
+
+/** Keyed by tab id (as a string — session storage is JSON). */
+export type TabStates = Record<string, TabState>;
+
+/** One SSE stream per project; `""` is "no mapping, so the bridge's own cwd". */
+export const streamKeyOf = (state: TabState): string => state.project ?? "";
+
+/** The distinct origins currently switched on under a stream key. */
+export function originsInBucket(tabs: TabStates, key: string): Set<string> {
+  const origins = new Set<string>();
+  for (const state of Object.values(tabs)) if (streamKeyOf(state) === key) origins.add(state.origin);
+  return origins;
+}
+
+/**
+ * The tabs a review for `key` may be delivered to.
+ *
+ * `""` is not a project — it is "this origin is not in the options map", so the
+ * bridge files its notes in its own working directory. EVERY unmapped origin
+ * falls into that one bucket, which makes it ambiguous the moment two of them
+ * are switched on: a review meant for the bridge's default project would raise
+ * the agent's prompt on an unrelated site, and an Approve clicked there resolves
+ * the real review. Ambiguity here costs the human-in-the-loop guarantee, so the
+ * bucket delivers only while one origin occupies it. Mapping the origin in the
+ * options page is the fix — and the honest one.
+ */
+export function deliverableTabs(tabs: TabStates, key: string): number[] {
+  if (key === "" && originsInBucket(tabs, key).size > 1) return [];
+  return Object.entries(tabs)
+    .filter(([, state]) => streamKeyOf(state) === key)
+    .map(([id]) => Number(id))
+    .filter((id) => Number.isInteger(id));
 }
 
 // --- fetch proxy (content script → service worker) --------------------------
@@ -230,12 +280,21 @@ export function encodeFetchRequest(url: string, init: RequestInit = {}): FetchPr
   return request;
 }
 
-/** Service-worker side: shape + destination check before anything is fetched. */
-export function parseFetchRequest(message: unknown): FetchProxyRequest | null {
+/**
+ * Service-worker side: shape + destination check before anything is fetched.
+ *
+ * The destination is checked against the *configured* bridge origin, not
+ * merely "some loopback http URL". A content script runs in a page's tab and a
+ * page that can talk it into a proxied fetch would otherwise reach every other
+ * loopback service on the machine — an Ollama, an Elasticsearch, a Docker
+ * socket over TCP — with the full response body handed back to it.
+ */
+export function parseFetchRequest(message: unknown, bridgeOrigin: string): FetchProxyRequest | null {
   if (typeof message !== "object" || message === null) return null;
   const msg = message as Record<string, unknown>;
   if (msg.type !== FETCH_MESSAGE) return null;
   if (typeof msg.url !== "string" || !isAllowedBridgeUrl(msg.url)) return null;
+  if (new URL(msg.url).origin !== bridgeOrigin) return null;
   if (typeof msg.method !== "string") return null;
   if (typeof msg.headers !== "object" || msg.headers === null || Array.isArray(msg.headers)) {
     return null;

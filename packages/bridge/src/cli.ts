@@ -18,11 +18,16 @@
  * terminal has a TTY. TTY → no MCP client is listening, so skip the MCP wiring
  * and log normally.
  */
+import { randomBytes } from "node:crypto";
+import { unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { httpTools, inProcessTools, serveMcpOverStdio } from "./mcp.js";
 import { createBridgeServer, HOST } from "./server.js";
 
 const DEFAULT_PORT = 3499;
 const PROBE_TIMEOUT_MS = 1500;
+/** Where the daemon leaves its review-channel token for local adapters. */
+export const TOKEN_FILE = ".fix-ui.token";
 
 /** A bad invocation: reported as a one-line message, never a stack trace. */
 class UsageError extends Error {}
@@ -64,6 +69,17 @@ async function bridgeOwns(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * The review channel's shared secret. `FIXUI_TOKEN` when the developer wants a
+ * stable one (a checked-in dev script, a container); otherwise fresh per run,
+ * because a token that outlives the daemon is a token that protects nothing.
+ */
+function parseToken(env: NodeJS.ProcessEnv): string {
+  const configured = env.FIXUI_TOKEN?.trim();
+  if (configured) return configured;
+  return randomBytes(24).toString("base64url");
+}
+
 async function main(): Promise<void> {
   const port = parsePort(process.argv.slice(2), process.env);
   const project = process.cwd();
@@ -73,7 +89,8 @@ async function main(): Promise<void> {
     else console.log(message);
   };
 
-  const server = createBridgeServer({ port, defaultProject: project });
+  const token = parseToken(process.env);
+  const server = createBridgeServer({ port, defaultProject: project, token });
   try {
     await server.start();
   } catch (cause) {
@@ -91,7 +108,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  // The token file is written BEFORE the "listening" line, so anything that
+  // waits for that line (the e2e harness, a dev script) can read the token the
+  // moment it sees the port. 0600: it is a secret, on a shared machine too.
+  const tokenFile = path.join(project, TOKEN_FILE);
+  let wroteToken = false;
+  try {
+    await writeFile(tokenFile, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+    wroteToken = true;
+  } catch (cause) {
+    log(`fixui-bridge could not write ${tokenFile}: ${(cause as Error).message}`);
+  }
+
   log(`fixui-bridge listening on http://${HOST}:${server.port} (project ${project})`);
+  log(
+    `fixui-bridge review token: ${token}` +
+      (wroteToken ? ` (also in ${tokenFile})` : "") +
+      " — adapters need it for the review channel",
+  );
   // Daemon mode owns the inbox, so it is the only mode that can announce inbox
   // changes to the harness (`feedback/updated`).
   if (servesMcp) {
@@ -101,9 +135,14 @@ async function main(): Promise<void> {
   }
 
   const shutdown = (): void => {
-    void server.stop().then(
-      () => process.exit(0),
-      () => process.exit(1),
+    // A token file left behind after the daemon is gone points at a token that
+    // opens nothing; the next daemon writes its own.
+    const cleanup = wroteToken ? unlink(tokenFile).catch(() => undefined) : Promise.resolve();
+    void cleanup.then(() =>
+      server.stop().then(
+        () => process.exit(0),
+        () => process.exit(1),
+      ),
     );
   };
   process.on("SIGINT", shutdown);

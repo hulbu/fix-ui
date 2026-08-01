@@ -10,7 +10,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,10 +86,18 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 async function startDaemon(args: string[] = ["--port", "0"], env: NodeJS.ProcessEnv = {}): Promise<{
   run: CliRun;
   port: number;
+  project: string;
 }> {
-  const run = runCli(args, await tempProject(), env);
-  await waitFor(() => /listening on http:\/\/127\.0\.0\.1:\d+/.test(run.stderr), "the daemon to bind");
-  return { run, port: Number(/127\.0\.0\.1:(\d+)/.exec(run.stderr)![1]) };
+  const project = await tempProject();
+  const run = runCli(args, project, env);
+  // Both lines: the token follows the port, and stderr arrives in chunks — a
+  // wait for the port alone would sometimes read half a startup.
+  await waitFor(
+    () =>
+      /listening on http:\/\/127\.0\.0\.1:\d+/.test(run.stderr) && /review token: \S/.test(run.stderr),
+    "the daemon to bind and announce its token",
+  );
+  return { run, port: Number(/127\.0\.0\.1:(\d+)/.exec(run.stderr)![1]), project };
 }
 
 it("starts a loopback daemon on the requested port and answers /healthz", async () => {
@@ -100,6 +108,47 @@ it("starts a loopback daemon on the requested port and answers /healthz", async 
   // Logs go to stderr while MCP owns stdout — a single stray byte on stdout
   // would corrupt the client's JSON-RPC framing.
   expect(run.stdout).toBe("");
+});
+
+/**
+ * The review channel is token-gated, so the daemon has to hand the token to
+ * local adapters out of band: printed for a human to paste into the extension's
+ * options page, and in a file for anything scripted. Written BEFORE the
+ * "listening" line, so whatever waits for the port can read it immediately.
+ */
+it("prints a review token and leaves it in .fix-ui.token", async () => {
+  const { run, port, project } = await startDaemon();
+
+  const printed = /review token: (\S+)/.exec(run.stderr);
+  expect(printed).not.toBeNull();
+  const token = printed![1]!;
+
+  const fromFile = (await readFile(path.join(project, ".fix-ui.token"), "utf8")).trim();
+  expect(fromFile).toBe(token);
+
+  // And it is the token the daemon actually enforces.
+  const refused = await fetch(`http://127.0.0.1:${port}/events`);
+  expect(refused.status).toBe(401);
+  await refused.body?.cancel();
+
+  const controller = new AbortController();
+  const accepted = await fetch(`http://127.0.0.1:${port}/events?token=${encodeURIComponent(token)}`, {
+    signal: controller.signal,
+  });
+  expect(accepted.status).toBe(200);
+  controller.abort();
+});
+
+it("takes the token from FIXUI_TOKEN when one is configured", async () => {
+  const { run, port } = await startDaemon(["--port", "0"], { FIXUI_TOKEN: "stable-dev-token" });
+
+  expect(run.stderr).toContain("review token: stable-dev-token");
+  const controller = new AbortController();
+  const accepted = await fetch(`http://127.0.0.1:${port}/events?token=stable-dev-token`, {
+    signal: controller.signal,
+  });
+  expect(accepted.status).toBe(200);
+  controller.abort();
 });
 
 it("takes the port from FIXUI_PORT, and lets --port win over it", async () => {

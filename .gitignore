@@ -5,7 +5,11 @@ node_modules/
 dist/
 .fix-ui.jsonl
 .fix-ui.reviews.jsonl
+# The daemon's review-channel token, written to its own cwd — a secret, and one
+# that is regenerated every run.
+.fix-ui.token
 .superpowers/
+.code-review-graph/
 test-results/
 e2e/fixtures/fixui.js
 e2e/fixtures/react-app.js

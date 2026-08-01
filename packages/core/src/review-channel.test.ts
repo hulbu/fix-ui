@@ -120,6 +120,35 @@ describe("connectReviewChannel", () => {
     expect(picker.endReview).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The bridge gates both halves of this channel on a token: any page the
+   * developer visits can reach a loopback daemon, and a subscriber that learns
+   * a reviewId can answer the review in the human's place. In the query string
+   * on both, because `EventSource` cannot set headers.
+   */
+  it("carries the bridge token on the stream and on the verdict", async () => {
+    const picker = fakePicker();
+    const fetchImpl = okFetch();
+    connectReviewChannel({
+      bridgeUrl: BRIDGE,
+      project: "/repo/app",
+      token: "s3cret token",
+      picker,
+      fetchImpl,
+      eventSourceImpl,
+    });
+
+    expect(FakeEventSource.instances[0]!.url).toBe(
+      `${BRIDGE}/events?project=%2Frepo%2Fapp&token=s3cret+token`,
+    );
+
+    picker.verdict({ reviewId: "rev-1", verdict: "approved", entryIds: [] });
+    await settle();
+    expect(fetchImpl.mock.calls[0]![0]).toBe(
+      `${BRIDGE}/reviews/rev-1/verdict?token=s3cret%20token`,
+    );
+  });
+
   it("navigates by hash when only the fragment differs and ignores cross-origin urls", () => {
     const picker = fakePicker();
     connectReviewChannel({ bridgeUrl: `${BRIDGE}/`, picker, fetchImpl: okFetch(), eventSourceImpl });
