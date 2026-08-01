@@ -80,8 +80,11 @@ describe("<FixUi />", () => {
   it("does not throw where there is no `process` at all (a bundler-less browser)", async () => {
     vi.stubGlobal("process", undefined);
 
+    // Reading NODE_ENV throws here — nothing replaced the text and there is no
+    // `process` — and the guard's catch treats that as dev, so the picker mounts
+    // instead of the render blowing up.
     await render(<FixUi />);
 
-    expect(chip()).not.toBeNull(); // no NODE_ENV to read → treated as dev
+    expect(chip()).not.toBeNull();
   });
 });

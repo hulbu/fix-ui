@@ -115,6 +115,7 @@ afterEach(() => {
   document.body.innerHTML = "";
   document.body.style.cursor = "";
   vi.restoreAllMocks();
+  vi.unstubAllGlobals(); // the clipboard test stubs `navigator` — don't leak it
   vi.useRealTimers();
 });
 
