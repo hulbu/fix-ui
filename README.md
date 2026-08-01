@@ -8,11 +8,14 @@ name, page context, recent console errors — lands where your coding agent
 already looks. The name is the ritual: telling Claude Code to **"fix ui"**
 is how the loop closes.
 
-> **Status: design phase.** This repo is documentation only — nothing is
-> built yet. It extracts and generalizes a working prototype
-> (`tools/ui-feedback` in the hulbu monorepo) that we use daily to build
-> [hulbu](https://hulbu.com) itself. License: MIT intended at
-> open-sourcing.
+> **Status: v1, built.** Core, the npm embed, the Chrome extension and the
+> bridge are implemented: 168 unit and contract tests, plus a Playwright
+> suite that drives the real loops (picking, modal re-homing, the review
+> round-trip, the extension) in a real Chromium against a real bridge.
+> Nothing is published to npm or the Chrome Web Store yet — run it from
+> source, see [Development](#development). It extracts and generalizes a
+> working prototype (`tools/ui-feedback` in the hulbu monorepo) that we use
+> daily to build [hulbu](https://hulbu.com) itself. License: MIT.
 
 ## The loop
 
@@ -64,6 +67,50 @@ capture format never diverge.
   specifics, Codex notes.
 - [docs/capture-format.md](docs/capture-format.md) — the entry schema
   (v1: element + note + console errors; screenshots deliberately opt-in).
+
+## Development
+
+A pnpm workspace: `packages/*` (core, embed, bridge), `extension`, `e2e`.
+
+```bash
+pnpm install
+pnpm -r typecheck     # tsc --noEmit in every package
+pnpm -r test          # the unit and contract suites — and the e2e suite last
+```
+
+Two packages have a build; core and the embed ship TypeScript sources and
+are bundled by whatever consumes them:
+
+```bash
+pnpm --filter fixui-bridge build      # → packages/bridge/dist (cli.js is the bin)
+pnpm --filter fix-ui-extension build  # → extension/dist (esbuild)
+```
+
+End-to-end (a real Chromium and a real bridge daemon per test — it builds
+what it tests, so no manual build step first):
+
+```bash
+pnpm --filter e2e exec playwright install chromium   # once, downloads a browser
+pnpm --filter e2e test
+```
+
+**Run the bridge locally.** `node packages/bridge/dist/cli.js` — port 3499
+by default, `--port N` or `FIXUI_PORT` to move it; the project it writes to
+is its own working directory. Started from a terminal it just serves HTTP;
+started by an agent harness (stdin is a pipe) it also serves MCP over
+stdio, so registering it is `claude mcp add fixui -- node
+/abs/path/packages/bridge/dist/cli.js`. A second instance finds the port
+taken by a bridge and becomes an MCP proxy to it, scoped to *its* cwd.
+
+**Load the extension.** `chrome://extensions` → Developer mode → Load
+unpacked → the **`extension/`** directory (not `extension/dist`: the
+manifest lives at the package root and points into `dist/`). Its options
+page holds the bridge URL and the origin→project map. The toolbar button
+arms the picker on the current tab; a second click switches it off.
+
+**Use the embed in an app.** `initFixUi({ project: "/abs/path/to/repo" })`
+in a dev-only code path, or `<FixUi />` from `@hulbu/fixui/react`, which is
+safe to leave in a root layout: it no-ops in a production build.
 
 ## Origin
 

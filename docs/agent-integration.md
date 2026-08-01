@@ -45,7 +45,11 @@ participate; everything else is convenience:
   paths, plus
   `feedback/updated` notifications for clients that surface them. The
   notification does not start a turn (see the one fact); it only helps
-  harnesses that choose to react.
+  harnesses that choose to react. It is sent by the **daemon** — the
+  process that owns the port and the inbox files — after an entry is
+  added or removed, carrying `{ project }`; a proxy instance has no
+  notifications, since its client is attached to a different process than
+  the one whose inbox changed.
 
 ## Direction 2 — agent → human (`request_review`)
 
@@ -109,7 +113,10 @@ extension alike):
   picker armed, navigating/anchoring to `url` when given — and
   `review-cancelled` `{ reviewId }` (timeout or agent abort; stand the
   banner down). Comment-line heartbeats every 15s keep the stream alive
-  through intermediaries.
+  through intermediaries. A review still pending for that project is
+  replayed to every new subscriber the moment it connects: a reload — or
+  the navigation `url` itself asks for — drops the stream mid-review, and
+  the page that comes back has to re-arm itself.
 - Notes dropped during a review are ordinary `POST /entries`; the page
   tracks the ids it created.
 - `POST /reviews/:reviewId/verdict` `{ verdict: "approved" | "changes",
