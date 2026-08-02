@@ -16,7 +16,7 @@ const JSON_HEADERS = { "content-type": "application/json" };
 beforeEach(async () => {
   projectDir = await mkdtemp(path.join(tmpdir(), "fixui-server-"));
   otherDir = await mkdtemp(path.join(tmpdir(), "fixui-other-"));
-  // Port 0: the OS picks a free port, so tests never touch the daemon's 3499.
+  // Port 0: the OS picks a free port, the way every bridge does in practice.
   server = createBridgeServer({ port: 0, defaultProject: projectDir });
   await server.start();
   base = `http://127.0.0.1:${server.port}`;

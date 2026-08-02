@@ -5,9 +5,11 @@ node_modules/
 dist/
 .fix-ui.jsonl
 .fix-ui.reviews.jsonl
-# The daemon's review-channel token, written to its own cwd — a secret, and one
-# that is regenerated every run.
-.fix-ui.token
+# The running bridge's port and review-channel token, published in its own cwd
+# — a secret, and one that is regenerated every run.
+.fix-ui.json
+# …and the temp file an interrupted publish can leave behind.
+.fix-ui.json.*.tmp
 .superpowers/
 .code-review-graph/
 test-results/

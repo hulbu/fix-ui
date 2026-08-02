@@ -65,8 +65,9 @@ were fixed on the branch; these are the residue.
   first matching reply wins, so a page listener registered at load time
   beats the real one. Component names are influence-only, but the agent
   trusts that field.
-- `.fix-ui.token` is written `0600` at creation only; a pre-existing file
-  keeps looser permissions.
+- `.fix-ui.json` names a bridge that may already be gone; every reader has
+  to probe `/healthz` before trusting it, and a reader that forgets sends
+  an agent at whatever process inherited that recycled port.
 - `POST /reviews`'s `prompt` has no length cap of its own, only the 256KB
   body cap.
 - The extension's fetch proxy reads `storage.sync` on every request.

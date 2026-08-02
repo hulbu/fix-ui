@@ -1,15 +1,19 @@
 /**
  * The MCP surface, exercised the way an agent harness exercises it: a real SDK
  * client talking JSON-RPC over stdio to a *spawned* `dist/cli.js` (built once by
- * the vitest global setup). Both process modes are covered — the daemon that
- * binds the port and serves its tools in-process, and the proxy that finds the
- * port already held by a fixui-bridge and forwards its tools over HTTP.
+ * the vitest global setup).
  *
- * Every spawn passes `--port 0` (or an ephemeral daemon's port), so a real 3499
- * daemon on the developer's machine is never touched.
+ * A spawned bridge is always a **proxy** now — the bridge itself belongs to the
+ * dev server (`fixui dev`), so every spawn here is paired with an owner started
+ * in a temp project, and the proxy finds it through that project's
+ * `.fix-ui.json`. Nothing binds a fixed port, so a bridge running on the
+ * developer's own machine is never touched.
+ *
+ * The in-process tools (`inProcessTools`) are still covered directly, over an
+ * in-memory transport: they are what the owner's HTTP routes are built on.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,6 +29,7 @@ import {
   type ReviewBroker,
   type ReviewOutcome,
 } from "./broker.js";
+import { DISCOVERY_FILE, type Discovery } from "./discovery.js";
 import { createMcpServer, httpTools, inProcessTools, type ReviewTools } from "./mcp.js";
 import { createBridgeServer } from "./server.js";
 import { inboxPath } from "./storage.js";
@@ -67,11 +72,12 @@ function sampleEntry(id: string, note: string): Record<string, unknown> {
   };
 }
 
-/** An MCP client over a spawned `fixui-bridge`. stderr is piped so the bridge's
- *  logs stay out of the test output — and so this suite can read them. */
+/** An MCP client over a spawned `fixui-bridge` — the proxy role, which is the
+ *  only one an agent harness ever gets. stderr is piped so the bridge's logs
+ *  stay out of the test output — and so this suite can read them. */
 async function connect(
   cwd: string,
-  args: string[] = ["--port", "0"],
+  args: string[] = [],
   env: Record<string, string> = {},
 ): Promise<{
   client: Client;
@@ -92,19 +98,6 @@ async function connect(
   await client.connect(transport);
   transport.stderr!.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
   return { client, stderr: () => stderr };
-}
-
-/** The port the spawned bridge logged (stderr — stdout is the MCP transport).
- *  Node buffers a paused stream, so a listener attached after the line was
- *  written still sees it. */
-async function waitForPort(stderr: () => string): Promise<number> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const match = /listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(stderr());
-    if (match) return Number(match[1]);
-    await new Promise((done) => setTimeout(done, 20));
-  }
-  throw new Error(`bridge never logged a port; stderr: ${stderr()}`);
 }
 
 async function waitUntil(condition: () => boolean, what: string): Promise<void> {
@@ -134,16 +127,20 @@ async function inboxIds(dir: string): Promise<string[]> {
     .map((line) => (JSON.parse(line) as { id: string }).id);
 }
 
-/** Start a daemon the way a first session does, and read its port off stderr. */
-async function startDaemon(
+/**
+ * The bridge a dev server owns: `fixui dev -- <a process that just waits>`,
+ * which is what a real dev command looks like from here. Its port and token go
+ * into the project's `.fix-ui.json`, which is how every proxy below finds it.
+ */
+async function startOwner(
   cwd: string,
   env: Record<string, string> = {},
-): Promise<{ port: number; stdout: () => string }> {
-  const child = spawn(process.execPath, [cliPath, "--port", "0"], {
-    cwd,
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ...env },
-  });
+): Promise<{ port: number; token: string; stdout: () => string }> {
+  const child = spawn(
+    process.execPath,
+    [cliPath, "dev", "--", process.execPath, "-e", "setInterval(() => {}, 1 << 30)"],
+    { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } },
+  );
   daemons.push(child);
   let stdout = "";
   let stderr = "";
@@ -152,15 +149,19 @@ async function startDaemon(
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const match = /127\.0\.0\.1:(\d+)/.exec(stderr);
-    if (match) return { port: Number(match[1]), stdout: () => stdout };
+    const raw = await readFile(path.join(cwd, DISCOVERY_FILE), "utf8").catch(() => undefined);
+    if (raw !== undefined) {
+      const discovery = JSON.parse(raw) as Discovery;
+      return { port: discovery.port, token: discovery.token, stdout: () => stdout };
+    }
     await new Promise((done) => setTimeout(done, 20));
   }
-  throw new Error(`daemon never bound a port; stderr: ${stderr}`);
+  throw new Error(`the dev server never published a bridge; stderr: ${stderr}`);
 }
 
 it("lists tools; list_feedback and resolve_feedback round-trip against a temp project", async () => {
   const dir = await tempProject([sampleEntry("a", "make this bigger"), sampleEntry("b", "wrong copy")]);
+  await startOwner(dir);
   const { client } = await connect(dir);
 
   const tools = await client.listTools();
@@ -203,6 +204,7 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
 
 it("request_review returns no-reviewer immediately when nobody is connected", async () => {
   const dir = await tempProject();
+  await startOwner(dir);
   const { client } = await connect(dir);
 
   const started = Date.now();
@@ -218,12 +220,13 @@ it("request_review returns no-reviewer immediately when nobody is connected", as
   expect(empty.isError).toBe(true);
 });
 
-it("daemon mode: an inbox change over HTTP notifies the connected MCP client", async () => {
-  // One process, both roles: it binds the port AND serves this client's MCP
-  // over stdio, which is the only wiring where the notification can exist.
+it("an inbox change over HTTP notifies the connected MCP client", async () => {
+  // Two processes now: the dev server's bridge takes the entry over HTTP, and
+  // the agent's proxy — which is where the MCP client is attached — sees the
+  // inbox file change underneath it and says so.
   const dir = await tempProject();
-  const { client, stderr } = await connect(dir);
-  const port = await waitForPort(stderr);
+  const { port } = await startOwner(dir);
+  const { client } = await connect(dir);
 
   const notifications: { method: string; params?: Record<string, unknown> }[] = [];
   client.fallbackNotificationHandler = (notification) => {
@@ -241,7 +244,13 @@ it("daemon mode: an inbox change over HTTP notifies the connected MCP client", a
   expect(created.ok).toBe(true);
 
   await waitUntil(() => notifications.length >= 1, "the create notification");
-  expect(notifications[0]).toMatchObject({ method: "feedback/updated", params: { project: dir } });
+  // The proxy names its own cwd, which a spawned process reports resolved —
+  // the same directory, spelled the way that process sees it.
+  const seenAs = await realpath(dir);
+  expect(notifications[0]).toMatchObject({
+    method: "feedback/updated",
+    params: { project: seenAs },
+  });
   expect(Object.keys(notifications[0]!.params ?? {})).toEqual(["project"]);
 
   const query = `?project=${encodeURIComponent(dir)}`;
@@ -250,7 +259,10 @@ it("daemon mode: an inbox change over HTTP notifies the connected MCP client", a
   });
   expect(deleted.ok).toBe(true);
   await waitUntil(() => notifications.length >= 2, "the delete notification");
-  expect(notifications[1]).toMatchObject({ method: "feedback/updated", params: { project: dir } });
+  expect(notifications[1]).toMatchObject({
+    method: "feedback/updated",
+    params: { project: seenAs },
+  });
 
   // An unknown id answers `{ok:true}` but changes nothing, so it announces nothing.
   await fetch(`http://127.0.0.1:${port}/entries/never-existed${query}`, { method: "DELETE" });
@@ -547,13 +559,13 @@ it("fails a proxied call when the daemon dies mid-response instead of hanging", 
   await new Promise((done) => stub.close(done));
 });
 
-it("proxy mode: a second instance forwards its own project's tools to the running daemon", async () => {
-  const daemonDir = await tempProject([sampleEntry("daemon-1", "the daemon's own project")]);
-  // A shared `FIXUI_TOKEN` is how a proxy gets the review token it cannot read
-  // off the daemon's disk — without it `list_surfaces` is the one tool a proxy
-  // cannot serve (the listing is gated).
+it("proxy mode: an instance in another project forwards its own tools to a named bridge", async () => {
+  const daemonDir = await tempProject([sampleEntry("daemon-1", "the dev server's own project")]);
+  // Another project's bridge is not in this proxy's `.fix-ui.json`, so the port
+  // is named by hand — and a shared `FIXUI_TOKEN` is then the only way it can
+  // have the review token `list_surfaces` is gated by.
   const token = "shared-token-for-both";
-  const { port, stdout } = await startDaemon(daemonDir, { FIXUI_TOKEN: token });
+  const { port, stdout } = await startOwner(daemonDir, { FIXUI_TOKEN: token });
 
   const proxyDir = await tempProject([sampleEntry("proxy-1", "the proxy's project")]);
   const { client, stderr } = await connect(proxyDir, ["--port", String(port)], {

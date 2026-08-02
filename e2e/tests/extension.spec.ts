@@ -52,7 +52,7 @@ async function configure(sw: Worker, origin: string, bridge: Bridge): Promise<vo
       options: {
         bridgeUrl: bridge.url,
         originMap: `${origin}=${bridge.project}`,
-        // What a developer pastes into the options page from `.fix-ui.token`.
+        // What a developer pastes into the options page from `.fix-ui.json`.
         token: bridge.token,
       },
     },

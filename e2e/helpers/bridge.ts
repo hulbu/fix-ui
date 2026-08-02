@@ -5,24 +5,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * A real `fixui-bridge` per test: the built `packages/bridge/dist/cli.js`,
- * spawned on an ephemeral port with a throwaway directory as its project.
+ * A real bridge per test, started the way a developer starts one: the built
+ * `packages/bridge/dist/cli.js` as `fixui dev -- <a process that just waits>`,
+ * with a throwaway directory as its project. The bridge's lifetime belongs to
+ * that dev command, so `stop()` is a signal to the wrapper and everything —
+ * port, discovery file, child — goes away together.
  *
- * **Port discovery.** `--port 0` lets the OS pick, and the CLI logs the bound
- * port (`fixui-bridge listening on http://127.0.0.1:<port>`) — on **stderr**,
- * because a process handed a pipe on stdin assumes a harness is speaking MCP on
- * stdout. So: read the port off stderr, then confirm it with `/healthz` before
- * handing it to a test. (Binding a port here to "reserve" it and releasing it
- * again would be the racy alternative; the daemon's own log is authoritative.)
- *
- * The spawned process therefore also has an MCP server wired to its stdio. No
- * client ever initializes it, so it stays silent — see the `initialized` gate
- * in packages/bridge/src/mcp.ts.
+ * **Discovery.** No fixed port and no fixed token: the bridge binds 0 and
+ * publishes both in `.fix-ui.json` in its project, which is where adapters and
+ * the agent's MCP proxy read them, so it is where this helper reads them too.
+ * (Binding a port here to "reserve" one and releasing it again would be the
+ * racy alternative; the bridge's own file is authoritative.) `/healthz`
+ * confirms the port before any test is handed it.
  */
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cliPath = path.join(repoRoot, "packages", "bridge", "dist", "cli.js");
 
-const PORT_TIMEOUT_MS = 15_000;
+/** A stand-in for a dev server: a process that ends only when it is signalled. */
+const DEV_COMMAND = [process.execPath, "-e", "setInterval(() => {}, 1 << 30)"];
+
+const START_TIMEOUT_MS = 15_000;
 const EXIT_TIMEOUT_MS = 5000;
 
 export type JsonRecord = Record<string, unknown>;
@@ -31,12 +33,11 @@ export interface Bridge {
   /** e.g. "http://127.0.0.1:53211" */
   readonly url: string;
   readonly port: number;
-  /** The temp directory the daemon runs in — its inbox lives here. */
+  /** The temp directory the bridge runs in — its inbox lives here. */
   readonly project: string;
   /**
-   * The review channel's token. The daemon prints it on stderr and writes it to
-   * `.fix-ui.token` in its own cwd; adapters get it out of band, and without it
-   * `GET /events` and the verdict POST are 401.
+   * The review channel's token, from `.fix-ui.json`. Adapters get it from that
+   * file too; without it `GET /events` and the verdict POST are 401.
    */
   readonly token: string;
   /** `.fix-ui.jsonl`, parsed. Empty until the first entry lands. */
@@ -44,6 +45,13 @@ export interface Bridge {
   /** `.fix-ui.reviews.jsonl`, parsed. */
   reviews(): Promise<JsonRecord[]>;
   stop(): Promise<void>;
+}
+
+interface Discovery {
+  v: 1;
+  port: number;
+  token: string;
+  pid: number;
 }
 
 async function readJsonl(file: string): Promise<JsonRecord[]> {
@@ -68,9 +76,17 @@ async function healthy(url: string): Promise<boolean> {
   }
 }
 
+async function readDiscovery(project: string): Promise<Discovery | undefined> {
+  try {
+    return JSON.parse(await readFile(path.join(project, ".fix-ui.json"), "utf8")) as Discovery;
+  } catch {
+    return undefined; // not published yet, or half a write
+  }
+}
+
 export async function startBridge(): Promise<Bridge> {
   const project = await mkdtemp(path.join(tmpdir(), "fixui-e2e-"));
-  const child: ChildProcess = spawn(process.execPath, [cliPath, "--port", "0"], {
+  const child: ChildProcess = spawn(process.execPath, [cliPath, "dev", "--", ...DEV_COMMAND], {
     cwd: project,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -85,6 +101,8 @@ export async function startBridge(): Promise<Bridge> {
 
   const stop = async (): Promise<void> => {
     if (!exited) {
+      // The wrapper passes this on to the dev command and takes the bridge down
+      // when it goes; SIGKILL is the last resort for a child that will not.
       child.kill("SIGTERM");
       await Promise.race([
         new Promise((done) => child.once("exit", done)),
@@ -94,23 +112,20 @@ export async function startBridge(): Promise<Bridge> {
     await rm(project, { recursive: true, force: true });
   };
 
-  const deadline = Date.now() + PORT_TIMEOUT_MS;
+  const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (exited) {
       await stop();
-      throw new Error(`fixui-bridge exited before binding a port\nstderr: ${stderr}`);
+      throw new Error(`fixui dev exited before publishing a bridge\nstderr: ${stderr}`);
     }
-    const match = /listening on (http:\/\/127\.0\.0\.1:\d+)/.exec(stderr);
-    // The token is on the same stderr. Both lines are required before this
-    // returns: stderr arrives in chunks, and half a startup is not a bridge.
-    const tokenMatch = /review token: (\S+)/.exec(stderr);
-    if (match && tokenMatch && (await healthy(match[1]!))) {
-      const url = match[1]!;
+    const discovery = await readDiscovery(project);
+    const url = discovery === undefined ? undefined : `http://127.0.0.1:${discovery.port}`;
+    if (url !== undefined && discovery !== undefined && (await healthy(url))) {
       return {
         url,
-        port: Number(new URL(url).port),
+        port: discovery.port,
         project,
-        token: tokenMatch[1]!,
+        token: discovery.token,
         entries: () => readJsonl(path.join(project, ".fix-ui.jsonl")),
         reviews: () => readJsonl(path.join(project, ".fix-ui.reviews.jsonl")),
         stop,
@@ -121,7 +136,7 @@ export async function startBridge(): Promise<Bridge> {
 
   await stop();
   throw new Error(
-    `fixui-bridge never reported a healthy port within ${PORT_TIMEOUT_MS}ms\n` +
+    `fixui dev never published a healthy bridge within ${START_TIMEOUT_MS}ms\n` +
       `stderr: ${stderr}\nstdout: ${stdout}`,
   );
 }

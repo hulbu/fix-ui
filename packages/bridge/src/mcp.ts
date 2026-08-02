@@ -3,9 +3,9 @@
  * `resolve_feedback`, `request_review`, spoken over stdio to whatever harness
  * spawned this process.
  *
- * One server, two backends. `ReviewTools` is the seam: the daemon implements it
- * against its own broker and storage in-process, the proxy implements it by
- * forwarding to the daemon that already owns the port. Everything else — the
+ * One server, two backends. `ReviewTools` is the seam: the bridge that owns the
+ * port implements it against its own broker and storage in-process, and the
+ * proxy an agent spawns implements it by forwarding there. Everything else — the
  * tool list, the argument checking, the result shape, the progress
  * notifications that keep a held `request_review` alive — is shared.
  *
@@ -278,9 +278,10 @@ export type InboxChanges = (listener: (project: string) => void) => () => void;
 
 export interface StdioOptions {
   /**
-   * Daemon mode only. The proxy has none: its MCP client is attached to *this*
-   * process while the inbox is mutated in the daemon's, which has no way to
-   * reach back here (docs/agent-integration.md).
+   * Where "the inbox changed" comes from. The bridge that owns the port has a
+   * broker to ask; the proxy an agent spawns watches the inbox file in its own
+   * project instead (cli.ts) — the inbox is a file, and the proxy is the
+   * process the harness is actually connected to (docs/agent-integration.md).
    */
   onInboxChange?: InboxChanges;
 }
@@ -318,7 +319,9 @@ export async function serveMcpOverStdio(
   await server.connect(new StdioServerTransport());
 }
 
-/** Daemon mode: this process owns the broker and the inbox files. */
+/** Owner mode: this process owns the broker and the inbox files. Reachable
+ *  only in-process — under `fixui dev` the bridge's stdio belongs to the dev
+ *  command, so the tools an agent talks to are always the HTTP ones below. */
 export function inProcessTools(broker: ReviewBroker, defaultProject: string): ReviewTools {
   const resolve = (requested?: string): string => {
     const project = resolveProject(requested, defaultProject);
@@ -368,11 +371,11 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
  * a review before the daemon's own 600s default could answer it. The daemon
  * owns the clock; this side must not have one.
  *
- * `token` is the daemon's review token, needed by the one route a proxy calls
+ * `token` is the owner's review token, needed by the one route a proxy calls
  * that is gated (`GET /surfaces` — it discloses what the developer has open).
- * A proxy in another project cannot read the daemon's `.fix-ui.token`, so this
- * is `FIXUI_TOKEN` or the token file in this process's own cwd (cli.ts), and
- * absent often enough that the 401 has to explain itself.
+ * Normally it comes from this project's `.fix-ui.json`; when a port was named
+ * by hand it is `FIXUI_TOKEN` or nothing at all (cli.ts), which is why the 401
+ * has to explain itself.
  */
 export function httpTools(baseUrl: string, defaultProject: string, token?: string): ReviewTools {
   const call = async (
@@ -387,13 +390,13 @@ export function httpTools(baseUrl: string, defaultProject: string, token?: strin
       const parsed: unknown = JSON.parse(response.body);
       if (typeof parsed === "object" && parsed !== null) payload = parsed as JsonRecord;
     } catch {
-      throw new ToolError(`bridge daemon answered ${response.status} with a non-JSON body`);
+      throw new ToolError(`the bridge answered ${response.status} with a non-JSON body`);
     }
     return { status: response.status, payload };
   };
 
   const fail = (status: number, payload: JsonRecord): ToolError =>
-    new ToolError(String(payload.error ?? `bridge daemon answered ${status}`));
+    new ToolError(String(payload.error ?? `the bridge answered ${status}`));
 
   const ok = async (method: string, path: string, body?: JsonRecord): Promise<JsonRecord> => {
     const { status, payload } = await call(method, path, body);
@@ -424,9 +427,10 @@ export function httpTools(baseUrl: string, defaultProject: string, token?: strin
       const { status, payload } = await call("GET", `/surfaces${search ? `?${search}` : ""}`);
       if (status === 401) {
         throw new ToolError(
-          "the bridge daemon refused the surface listing: it is gated by the daemon's review " +
-            "token, which this process does not have. Set FIXUI_TOKEN for both the daemon and " +
-            "this one, or run request_review without a surfaceId.",
+          "the bridge refused the surface listing: it is gated by the bridge's review token, " +
+            "which this process does not have. That token is normally in this project's " +
+            ".fix-ui.json — a bridge named by hand with --port needs FIXUI_TOKEN set for both " +
+            "processes instead, or run request_review without a surfaceId.",
         );
       }
       if (status >= 400) throw fail(status, payload);
@@ -481,7 +485,7 @@ function send(
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
         // Headers arrived, then the daemon died mid-body: with no client-side
         // deadline by design, an unsettled promise here would hang forever.
-        res.on("aborted", () => reject(new Error("bridge daemon closed the connection")));
+        res.on("aborted", () => reject(new Error("the bridge closed the connection")));
         res.on("error", reject);
       },
     );
