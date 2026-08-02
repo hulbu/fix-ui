@@ -103,12 +103,16 @@
           id="projects"
           name="projects"
           spellcheck="false"
-          placeholder="https://app.example.com=/Users/me/app&#10;http://localhost:3000=/Users/me/site"
+          placeholder="https://app.example.com=/Users/me/app&#10;http://localhost:3000=/Users/me/site|dev&#10;http://localhost:4001=/Users/me/site|staging"
         ></textarea>
         <small
           >One <code>origin=/absolute/project/path</code> per line; <code>#</code> starts a comment.
           Exact origins only. Notes taken on an unmapped origin go to the bridge's own working
-          directory.</small
+          directory.<br />
+          Add <code>|a name</code> at the end of a line to label that origin — the agent sees it in
+          <code>list_surfaces</code> and can send a review to exactly that page, which is how two
+          ports of one app stay apart. <code>origin=|a name</code> labels an origin without mapping
+          it to a project.</small
         >
       </fieldset>
 

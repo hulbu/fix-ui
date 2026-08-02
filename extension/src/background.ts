@@ -7,20 +7,21 @@ import {
   REVIEW_REQUESTED_MESSAGE,
   TOGGLE_OFF_MESSAGE,
   createSseParser,
-  deliverableTabs,
+  lookupLabel,
   lookupProject,
   normalizeBridgeUrl,
   originOf,
-  originsInBucket,
   parseFetchRequest,
   parseOriginMap,
   parseReviewRequested,
-  streamKeyOf,
+  streamIdentity,
+  streamUrl,
   verdictReviewId,
   type FetchProxyResponse,
   type OriginMapping,
   type ReviewRequestMessage,
   type StoredOptions,
+  type TabState,
   type TabStates,
 } from "./protocol";
 
@@ -33,9 +34,13 @@ import {
  *   - **Bridge IO.** Content scripts inherit the page's mixed-content rules, so
  *     an https page cannot reach http://127.0.0.1. The worker holds the host
  *     permissions and does every fetch on the content script's behalf.
- *   - **The review channel.** One stream per project the active tabs map to.
- *     `EventSource` is not exposed in an extension service worker, so the SSE
- *     is a streamed `fetch` framed by `createSseParser`.
+ *   - **The review channel.** One stream per ARMED TAB — that is what makes two
+ *     windows on the same site individually addressable: each stream is its own
+ *     *surface* at the bridge, described with the tab's real window/tab ids,
+ *     title and url, and `request_review({surfaceId})` reaches exactly one of
+ *     them (docs/agent-integration.md "Surfaces"). `EventSource` is not exposed
+ *     in an extension service worker, so the SSE is a streamed `fetch` framed by
+ *     `createSseParser`.
  *
  * MV3 workers are killed at will, which is the design constraint behind the
  * rest: tab state lives in `chrome.storage.session`, every entry point re-runs
@@ -53,12 +58,16 @@ interface Stream {
   bridgeUrl: string;
   /** Re-opened when this changes: a stream on a stale token is a 401. */
   token: string;
+  /** What the stream was opened for (protocol.ts `streamIdentity`): the project
+   *  it files into and the site it is on. A same-origin navigation does NOT
+   *  change it, so the tab keeps the surfaceId a review may be aimed at. */
+  identity: string;
 }
 
 /**
- * Live streams and the review each one is currently showing, keyed by
- * `project ?? ""`. In memory on purpose: a stream cannot outlive the worker,
- * and the bridge re-announces a pending review when the stream comes back.
+ * Live streams and the review each one is currently showing, keyed by TAB ID.
+ * In memory on purpose: a stream cannot outlive the worker, and the bridge
+ * re-announces a pending untargeted review when the stream comes back.
  */
 const streams = new Map<string, Stream>();
 const pendingReviews = new Map<string, ReviewRequestMessage>();
@@ -86,9 +95,10 @@ async function readOptions(): Promise<{
   return { bridgeUrl, mappings, token };
 }
 
-/** `?token=` for a review-channel URL. The token never leaves the worker: a
- *  content script lives in a tab, and this is the credential that decides
- *  whether somebody may answer the developer's review. */
+/** `?token=` for a verdict URL. The token never leaves the worker: a content
+ *  script lives in a tab, and this is the credential that decides whether
+ *  somebody may answer the developer's review. (The stream's own URL is built
+ *  by `streamUrl`, which carries the token the same way.) */
 function withToken(url: string, token: string): string {
   if (!token) return url;
   const parsed = new URL(url);
@@ -112,8 +122,6 @@ async function writeTabs(tabs: TabStates): Promise<void> {
     // Nothing to do: the toggle still worked, it just won't survive a worker restart.
   }
 }
-
-const keyOf = streamKeyOf;
 
 // --- toolbar action --------------------------------------------------------
 
@@ -149,6 +157,26 @@ async function turnOff(tabId: number, tabs: TabStates): Promise<void> {
   await syncStreams();
 }
 
+/**
+ * What this tab is, as the bridge will list it (docs/agent-integration.md
+ * "Surfaces"). `activeTab` — granted by the toolbar click — is what makes the
+ * tab's url and title readable here; the window id needs no permission and is
+ * what tells two windows on one site apart.
+ */
+function describeTab(tab: chrome.tabs.Tab, origin: string, mappings: OriginMapping[]): TabState {
+  const project = lookupProject(mappings, origin);
+  const label = lookupLabel(mappings, origin);
+  const title = typeof tab.title === "string" ? tab.title.trim() : "";
+  return {
+    origin,
+    ...(project === undefined ? {} : { project }),
+    ...(label === undefined ? {} : { label }),
+    ...(typeof tab.url === "string" && tab.url !== "" ? { url: tab.url } : {}),
+    ...(title === "" ? {} : { title }),
+    ...(typeof tab.windowId === "number" && tab.windowId >= 0 ? { windowId: tab.windowId } : {}),
+  };
+}
+
 async function onAction(tab: chrome.tabs.Tab): Promise<void> {
   const tabId = tab.id;
   const origin = originOf(tab.url);
@@ -162,7 +190,6 @@ async function onAction(tab: chrome.tabs.Tab): Promise<void> {
   }
 
   const { mappings } = await readOptions();
-  const project = lookupProject(mappings, origin);
   try {
     await inject(tabId);
   } catch {
@@ -171,7 +198,7 @@ async function onAction(tab: chrome.tabs.Tab): Promise<void> {
     await setBadge(tabId, false);
     return;
   }
-  tabs[String(tabId)] = project === undefined ? { origin } : { origin, project };
+  tabs[String(tabId)] = describeTab(tab, origin, mappings);
   await writeTabs(tabs);
   await setBadge(tabId, true);
   await syncStreams();
@@ -183,12 +210,14 @@ async function onAction(tab: chrome.tabs.Tab): Promise<void> {
  * picking. `activeTab` survives same-origin navigation only; a cross-origin one
  * revokes it and the failed injection switches the tab off honestly.
  */
-async function onNavigated(tabId: number, url: string | undefined): Promise<void> {
+async function onNavigated(tab: chrome.tabs.Tab): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined) return;
   const tabs = await readTabs();
   const state = tabs[String(tabId)];
   if (!state) return;
 
-  const origin = originOf(url);
+  const origin = originOf(tab.url);
   if (!origin) {
     await turnOff(tabId, tabs);
     return;
@@ -199,37 +228,30 @@ async function onNavigated(tabId: number, url: string | undefined): Promise<void
     await turnOff(tabId, tabs);
     return;
   }
-  if (origin !== state.origin) {
-    // Different site, possibly a different project.
-    const { mappings } = await readOptions();
-    const project = lookupProject(mappings, origin);
-    tabs[String(tabId)] = project === undefined ? { origin } : { origin, project };
-    await writeTabs(tabs);
-  }
+  // The tab now shows a different page: remember it, so a stream opened from
+  // here on describes where the tab actually is. A same-origin move does not
+  // re-open the live stream (see `streamIdentity`) — the surface a review may
+  // be aimed at, quite possibly by the review that asked for this navigation,
+  // has to survive the move.
+  const { mappings } = await readOptions();
+  tabs[String(tabId)] = describeTab(tab, origin, mappings);
+  await writeTabs(tabs);
   await setBadge(tabId, true);
   await syncStreams();
 }
 
 // --- review channel --------------------------------------------------------
 
-/** The tabs a review for `key` may be delivered to — the rule (and the reason
- *  for it) lives in protocol.ts, where it is unit-tested. */
-async function tabsFor(key: string): Promise<number[]> {
-  return deliverableTabs(await readTabs(), key);
-}
-
-async function broadcast(key: string, message: unknown): Promise<void> {
-  const ids = await tabsFor(key);
-  await Promise.all(
-    ids.map(async (tabId) => {
-      try {
-        await chrome.tabs.sendMessage(tabId, message);
-      } catch {
-        // No content script in that tab right now — it will ask for config
-        // when it is injected, and a pending review travels in the answer.
-      }
-    }),
-  );
+/** One stream, one tab: whatever arrives on it is for that tab and no other.
+ *  The delivery ambiguity the old project-wide fan-out had to guard against
+ *  cannot arise — there is nothing to choose between. */
+async function tell(tabId: string, message: unknown): Promise<void> {
+  try {
+    await chrome.tabs.sendMessage(Number(tabId), message);
+  } catch {
+    // No content script in that tab right now — it will ask for config when it
+    // is injected, and a pending review travels in the answer.
+  }
 }
 
 /**
@@ -238,47 +260,42 @@ async function broadcast(key: string, message: unknown): Promise<void> {
  * steering somebody's tab off-site, and a cross-origin navigation would revoke
  * `activeTab` anyway.
  */
-async function navigateFor(key: string, url: string): Promise<void> {
+async function navigateFor(tabId: string, url: string): Promise<void> {
   const target = originOf(url);
   if (!target) return;
-  const tabs = await readTabs();
-  // The same delivery rule the banner follows: a tab that may not be told about
-  // the review may certainly not be navigated by it.
-  const deliverable = new Set(await tabsFor(key));
-  for (const [id, state] of Object.entries(tabs)) {
-    if (!deliverable.has(Number(id)) || state.origin !== target) continue;
-    try {
-      await chrome.tabs.update(Number(id), { url });
-    } catch {
-      // Tab gone.
-    }
+  const state = (await readTabs())[tabId];
+  if (!state || state.origin !== target) return;
+  try {
+    await chrome.tabs.update(Number(tabId), { url });
+  } catch {
+    // Tab gone.
   }
 }
 
-async function dispatch(key: string, event: { event: string; data: string }): Promise<void> {
+async function dispatch(tabId: string, event: { event: string; data: string }): Promise<void> {
   if (event.event === "review-requested") {
     const request = parseReviewRequested(event.data);
     if (!request) return;
-    pendingReviews.set(key, request);
-    await broadcast(key, { type: REVIEW_REQUESTED_MESSAGE, request });
-    if (request.url) await navigateFor(key, request.url);
+    pendingReviews.set(tabId, request);
+    await tell(tabId, { type: REVIEW_REQUESTED_MESSAGE, request });
+    if (request.url) await navigateFor(tabId, request.url);
     return;
   }
   if (event.event === "review-cancelled") {
-    pendingReviews.delete(key);
-    await broadcast(key, { type: REVIEW_CANCELLED_MESSAGE });
+    pendingReviews.delete(tabId);
+    await tell(tabId, { type: REVIEW_CANCELLED_MESSAGE });
   }
+  // `surface` (the id the bridge assigned this tab) needs no action here: the
+  // agent reads it from the bridge's own `list_surfaces`, and the worker has
+  // nothing to say back on the stream.
 }
 
 async function pump(
-  key: string,
-  project: string | undefined,
-  bridgeUrl: string,
-  token: string,
+  tabId: string,
+  url: string,
   controller: AbortController,
 ): Promise<void> {
-  const query = project ? `?project=${encodeURIComponent(project)}` : "";
-  const response = await fetch(withToken(`${bridgeUrl}/events${query}`, token), {
+  const response = await fetch(url, {
     signal: controller.signal,
     headers: { accept: "text/event-stream" },
   });
@@ -291,28 +308,23 @@ async function pump(
     const { value, done } = await reader.read();
     if (done) return;
     for (const event of parser.push(decoder.decode(value, { stream: true }))) {
-      await dispatch(key, event);
+      await dispatch(tabId, event);
     }
   }
 }
 
-function openStream(
-  key: string,
-  project: string | undefined,
-  bridgeUrl: string,
-  token: string,
-): void {
+function openStream(tabId: string, state: TabState, bridgeUrl: string, token: string): void {
   const controller = new AbortController();
   // Registered before the first await, so two overlapping syncStreams() cannot
   // open the same stream twice.
-  streams.set(key, { controller, bridgeUrl, token });
-  void pump(key, project, bridgeUrl, token, controller)
+  streams.set(tabId, { controller, bridgeUrl, token, identity: streamIdentity(state) });
+  void pump(tabId, streamUrl(bridgeUrl, tabId, state, token), controller)
     .catch(() => {
       // Bridge down, restarted, or the worker is being torn down. The alarm
       // (and the next event of any kind) re-opens it.
     })
     .finally(() => {
-      if (streams.get(key)?.controller === controller) streams.delete(key);
+      if (streams.get(tabId)?.controller === controller) streams.delete(tabId);
     });
 }
 
@@ -344,19 +356,25 @@ async function syncStreams(): Promise<void> {
   const tabs = await readTabs();
   const { bridgeUrl, token } = await readOptions();
 
-  const wanted = new Map<string, string | undefined>();
-  for (const state of Object.values(tabs)) wanted.set(keyOf(state), state.project);
-
-  for (const [key, stream] of [...streams]) {
-    if (wanted.has(key) && stream.bridgeUrl === bridgeUrl && stream.token === token) continue;
+  for (const [tabId, stream] of [...streams]) {
+    const state = tabs[tabId];
+    // Kept only while the tab is still armed at the same bridge, on the same
+    // token, for the same project and site. A same-origin navigation is none of
+    // those: the stream — and the surfaceId a review may name — stays put.
+    const keep =
+      state !== undefined &&
+      stream.bridgeUrl === bridgeUrl &&
+      stream.token === token &&
+      stream.identity === streamIdentity(state);
+    if (keep) continue;
     stream.controller.abort();
-    streams.delete(key);
-    pendingReviews.delete(key);
+    streams.delete(tabId);
+    pendingReviews.delete(tabId);
   }
-  for (const [key, project] of wanted) {
-    if (!streams.has(key)) openStream(key, project, bridgeUrl, token);
+  for (const [tabId, state] of Object.entries(tabs)) {
+    if (!streams.has(tabId)) openStream(tabId, state, bridgeUrl, token);
   }
-  await keepAlarm(wanted.size > 0);
+  await keepAlarm(Object.keys(tabs).length > 0);
 }
 
 // --- messages from content scripts ------------------------------------------
@@ -410,16 +428,11 @@ async function handleConfig(
   const tabs = await readTabs();
   const state = tabId === undefined ? undefined : tabs[String(tabId)];
   const project = state ? state.project : lookupProject(mappings, origin);
-  const key = project ?? "";
-  let review = pendingReviews.get(key);
-  // Same rule the broadcast follows (see tabsFor): the unmapped bucket may only
-  // replay a pending review while one origin occupies it. A tab injected a
-  // moment ago may not be in `tabs` yet, so its own origin joins the count.
-  if (review && key === "") {
-    const origins = originsInBucket(tabs, key);
-    if (origin) origins.add(origin);
-    if (origins.size > 1) review = undefined;
-  }
+  // A review pending for THIS tab, and only this tab: a fresh content script
+  // (the navigation the review itself asked for) re-arms with the banner the
+  // stream already delivered. No ambiguity to resolve any more — a stream
+  // belongs to one tab, so a pending review names one tab.
+  const review = tabId === undefined ? undefined : pendingReviews.get(String(tabId));
 
   respond({ bridgeUrl, project, review });
 }
@@ -429,7 +442,7 @@ async function handleConfig(
 chrome.action.onClicked.addListener((tab) => void onAction(tab));
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === "complete") void onNavigated(tabId, tab.url);
+  if (changeInfo.status === "complete") void onNavigated({ ...tab, id: tabId });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

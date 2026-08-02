@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_BRIDGE_URL,
   MAX_MAIN_MESSAGE,
+  MAX_SURFACE_LABEL,
   createSseParser,
   decodeFetchResponse,
-  deliverableTabs,
   encodeFetchRequest,
   isAllowedBridgeUrl,
+  lookupLabel,
   lookupProject,
-  originsInBucket,
   normalizeBridgeUrl,
   originOf,
   parseFetchRequest,
@@ -16,6 +16,8 @@ import {
   parseOriginMap,
   parseReviewRequested,
   serializeOriginMap,
+  streamIdentity,
+  streamUrl,
   verdictReviewId,
 } from "./protocol";
 
@@ -103,6 +105,52 @@ describe("parseOriginMap", () => {
     expect(serializeOriginMap(mappings)).toBe(text);
     expect(parseOriginMap(serializeOriginMap(mappings)).mappings).toEqual(mappings);
   });
+
+  /**
+   * `|label` names the page for the agent's `list_surfaces` — the whole point
+   * of mapping two ports of one app to one project. Old lines have no `|` and
+   * parse exactly as they always did.
+   */
+  it("takes an optional |label after the project, and a label with no project at all", () => {
+    const { mappings, errors } = parseOriginMap(
+      [
+        "http://localhost:3000=/Users/me/app|dev",
+        "http://localhost:4001=/Users/me/app | staging ",
+        "http://localhost:5000=|just a name",
+        "https://app.example.com=/Users/me/app",
+      ].join("\n"),
+    );
+    expect(errors).toEqual([]);
+    expect(mappings).toEqual([
+      { origin: "http://localhost:3000", project: "/Users/me/app", label: "dev" },
+      { origin: "http://localhost:4001", project: "/Users/me/app", label: "staging" },
+      { origin: "http://localhost:5000", label: "just a name" },
+      { origin: "https://app.example.com", project: "/Users/me/app" },
+    ]);
+    expect(lookupProject(mappings, "http://localhost:5000")).toBeUndefined();
+    expect(lookupLabel(mappings, "http://localhost:4001")).toBe("staging");
+    expect(lookupLabel(mappings, "https://app.example.com")).toBeUndefined();
+    expect(serializeOriginMap(mappings)).toBe(
+      [
+        "http://localhost:3000=/Users/me/app|dev",
+        "http://localhost:4001=/Users/me/app|staging",
+        "http://localhost:5000=|just a name",
+        "https://app.example.com=/Users/me/app",
+      ].join("\n"),
+    );
+  });
+
+  it("caps a label and refuses a line that names neither a project nor a label", () => {
+    const { mappings, errors } = parseOriginMap(
+      `https://a.example.com=/Users/me/a|${"L".repeat(500)}\nhttps://b.example.com=|   \nhttps://c.example.com=|tab\tseparated`,
+    );
+    expect(mappings[0]?.label).toHaveLength(MAX_SURFACE_LABEL);
+    // A label is one line of text an agent reads: control characters go.
+    expect(mappings[1]).toEqual({ origin: "https://c.example.com", label: "tabseparated" });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ line: 2 });
+    expect(errors[0]?.reason).toMatch(/absolute path/i);
+  });
 });
 
 describe("lookupProject", () => {
@@ -183,57 +231,70 @@ describe("isAllowedBridgeUrl", () => {
   });
 });
 
-describe("deliverableTabs", () => {
+/**
+ * One stream per armed TAB, not per project (docs/agent-integration.md
+ * "Surfaces"). That is what makes two windows on the same site individually
+ * addressable — and it retires the old `""`-bucket ambiguity rule, which had to
+ * refuse delivery whenever two unmapped origins were armed at once.
+ */
+describe("per-tab streams", () => {
   const APP = "https://app.example.com";
-  const SHOP = "https://shop.example.com";
-  const NEWS = "https://news.example.com";
+  const BRIDGE = "http://127.0.0.1:3499";
 
-  it("delivers a project's review to every tab mapped to it", () => {
-    const tabs = {
-      "1": { origin: APP, project: "/repo/app" },
-      "2": { origin: APP, project: "/repo/app" },
-      "3": { origin: SHOP, project: "/repo/shop" },
-    };
-    expect(deliverableTabs(tabs, "/repo/app")).toEqual([1, 2]);
-    expect(deliverableTabs(tabs, "/repo/shop")).toEqual([3]);
-    expect(deliverableTabs(tabs, "/repo/nothing")).toEqual([]);
+  it("describes the tab behind a stream, so an agent can tell two windows apart", () => {
+    const url = new URL(
+      streamUrl(BRIDGE, "12", {
+        origin: APP,
+        project: "/repo/app",
+        label: "window one",
+        title: "Pricing",
+        url: `${APP}/pricing`,
+        windowId: 7,
+      }),
+      BRIDGE,
+    );
+
+    expect(`${url.origin}${url.pathname}`).toBe(`${BRIDGE}/events`);
+    expect(url.searchParams.get("project")).toBe("/repo/app");
+    expect(url.searchParams.get("origin")).toBe(APP);
+    expect(url.searchParams.get("url")).toBe(`${APP}/pricing`);
+    expect(url.searchParams.get("title")).toBe("Pricing");
+    expect(url.searchParams.get("label")).toBe("window one");
+    expect(url.searchParams.get("adapter")).toBe("extension");
+    expect(url.searchParams.get("windowId")).toBe("7");
+    expect(url.searchParams.get("tabId")).toBe("12");
+    expect(url.searchParams.get("token")).toBeNull();
   });
 
-  it("delivers to the unmapped bucket while one origin occupies it", () => {
-    const tabs = { "1": { origin: APP }, "2": { origin: APP } };
-    expect(deliverableTabs(tabs, "")).toEqual([1, 2]);
+  it("omits what the tab has no answer for, and carries the token when there is one", () => {
+    const bare = new URL(streamUrl(BRIDGE, "3", { origin: APP }));
+    expect(bare.searchParams.get("project")).toBeNull(); // unmapped → the bridge's cwd
+    expect(bare.searchParams.get("title")).toBeNull();
+    expect(bare.searchParams.get("windowId")).toBeNull();
+    expect(bare.searchParams.get("tabId")).toBe("3");
+
+    const gated = new URL(streamUrl(BRIDGE, "3", { origin: APP }, "tok-123"));
+    expect(gated.searchParams.get("token")).toBe("tok-123");
   });
 
   /**
-   * The bug this rule exists for: every unmapped origin shares the `""` bucket,
-   * because "unmapped" only says the notes go to the bridge's own cwd. A review
-   * for that default project would raise the agent's prompt on whatever
-   * unrelated site also happens to be switched on — and an Approve clicked
-   * there resolves the real review.
+   * A stream is re-opened only when what it was opened FOR changes — the
+   * project it files into, or the site it is on. Not on a same-origin
+   * navigation: reconnecting mints a new surfaceId, and a review aimed at this
+   * tab (which may be the very review that asked it to navigate) would lose the
+   * page it was aimed at.
    */
-  it("refuses the unmapped bucket once a second origin joins it", () => {
-    const tabs = { "1": { origin: APP }, "2": { origin: NEWS } };
-    expect(deliverableTabs(tabs, "")).toEqual([]);
+  it("keeps its identity across a navigation inside the same origin", () => {
+    const armed = { origin: APP, project: "/repo/app", title: "Home", url: `${APP}/` };
+    const navigated = { ...armed, title: "Pricing", url: `${APP}/pricing` };
+    expect(streamIdentity(navigated)).toBe(streamIdentity(armed));
 
-    // Mapping one of them is the fix: the other is alone in the bucket again.
-    const mapped = { "1": { origin: APP, project: "/repo/app" }, "2": { origin: NEWS } };
-    expect(deliverableTabs(mapped, "")).toEqual([2]);
-    expect(deliverableTabs(mapped, "/repo/app")).toEqual([1]);
-  });
-
-  /** Mapped projects are explicit, so sharing one across origins is a choice. */
-  it("still delivers a mapped project shared by two origins", () => {
-    const tabs = {
-      "1": { origin: APP, project: "/repo/app" },
-      "2": { origin: SHOP, project: "/repo/app" },
-    };
-    expect(deliverableTabs(tabs, "/repo/app")).toEqual([1, 2]);
-  });
-
-  it("reports the origins in a bucket", () => {
-    const tabs = { "1": { origin: APP }, "2": { origin: APP }, "3": { origin: NEWS, project: "/n" } };
-    expect([...originsInBucket(tabs, "")]).toEqual([APP]);
-    expect([...originsInBucket(tabs, "/n")]).toEqual([NEWS]);
+    // A different site, or a different project, is a different surface.
+    expect(streamIdentity({ ...armed, origin: "https://other.example.com" })).not.toBe(
+      streamIdentity(armed),
+    );
+    expect(streamIdentity({ ...armed, project: "/repo/other" })).not.toBe(streamIdentity(armed));
+    expect(streamIdentity({ origin: APP })).not.toBe(streamIdentity(armed));
   });
 });
 

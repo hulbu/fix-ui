@@ -65,8 +65,11 @@ async function save(event: SubmitEvent): Promise<void> {
     return;
   }
 
+  const mapped = mappings.filter((mapping) => mapping.project !== undefined).length;
+  const labelled = mappings.filter((mapping) => mapping.label !== undefined).length;
   const saved =
-    `Saved. ${mappings.length} ${mappings.length === 1 ? "origin is" : "origins are"} mapped to a project.` +
+    `Saved. ${mapped} ${mapped === 1 ? "origin is" : "origins are"} mapped to a project` +
+    (labelled === 0 ? "." : `, ${labelled} labelled for the agent.`) +
     (token ? "" : " No review token — request_review cannot reach this browser.");
   if (errors.length === 0) {
     say(`${saved} Changes apply the next time you switch fix-ui on for a tab.`);

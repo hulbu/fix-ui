@@ -16,6 +16,10 @@ export const MAX_MAIN_SOURCE = 300;
 export const MAX_COMPONENT_NAME = 80;
 export const MAX_REVIEW_PROMPT = 2000;
 
+/** Control characters are what a hostile page (or a fat-fingered options line)
+ *  would send; a surface description is read by an agent as one line. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
 /** postMessage envelope tags — the two worlds share one window. */
 export const MAIN_SOURCE = "fixui-main";
 export const CONTENT_SOURCE = "fixui-content";
@@ -42,8 +46,16 @@ export const REVIEW_CANCELLED_MESSAGE = "fixui:review-cancelled";
 export interface OriginMapping {
   /** Serialized origin, e.g. "https://app.example.com" (no trailing slash). */
   origin: string;
-  /** Absolute project directory the bridge routes entries into. */
-  project: string;
+  /** Absolute project directory the bridge routes entries into. Absent on a
+   *  label-only line: the notes go to the bridge's own cwd, as before. */
+  project?: string;
+  /**
+   * A human name for pages on this origin, shown to the agent in
+   * `list_surfaces` — "dev", "port 4001" (docs/agent-integration.md
+   * "Surfaces"). This is how two ports of one app stay distinguishable when
+   * they map to the same project.
+   */
+  label?: string;
 }
 
 export interface OriginMapError {
@@ -60,7 +72,11 @@ export interface ParsedOriginMap {
 
 const SYNTAX = "expected origin=/absolute/path, e.g. https://app.example.com=/Users/me/app";
 const BAD_ORIGIN = "origin must be an http(s) URL, e.g. https://app.example.com";
-const BAD_PROJECT = "project must be an absolute path, e.g. /Users/me/app";
+const BAD_PROJECT =
+  "project must be an absolute path, e.g. /Users/me/app — or a |label alone, e.g. =|port 4001";
+
+/** A label is one line of text an agent reads out of `list_surfaces`. */
+export const MAX_SURFACE_LABEL = 80;
 
 /** The serialized origin of an http(s) URL; undefined for anything else. */
 export function originOf(url: string | undefined | null): string | undefined {
@@ -81,6 +97,11 @@ export function originOf(url: string | undefined | null): string | undefined {
  * options page to show. Exact origins only: no wildcards in v1, and an
  * unmapped origin simply travels without a `project`, which the bridge routes
  * to its own cwd.
+ *
+ * A trailing `|label` names the pages on that origin for the agent
+ * (`list_surfaces`), and `origin=|label` labels an origin without mapping it
+ * anywhere. Both are additions: a line with no `|` parses exactly as it always
+ * did, so an existing map keeps working untouched.
  */
 export function parseOriginMap(text: string): ParsedOriginMap {
   const mappings: OriginMapping[] = [];
@@ -109,8 +130,13 @@ export function parseOriginMap(text: string): ParsedOriginMap {
       continue;
     }
 
-    const project = line.slice(split + 1).trim();
-    if (!project.startsWith("/")) {
+    // The label is whatever follows the first `|` — after the project, so a
+    // path may still contain `=` and an unlabelled line is unchanged.
+    const value = line.slice(split + 1);
+    const bar = value.indexOf("|");
+    const project = (bar < 0 ? value : value.slice(0, bar)).trim();
+    const label = bar < 0 ? undefined : surfaceLabel(value.slice(bar + 1));
+    if (project === "" ? label === undefined : !project.startsWith("/")) {
       fail(BAD_PROJECT);
       continue;
     }
@@ -120,14 +146,26 @@ export function parseOriginMap(text: string): ParsedOriginMap {
       continue;
     }
     seen.add(origin);
-    mappings.push({ origin, project });
+    mappings.push({
+      origin,
+      ...(project === "" ? {} : { project }),
+      ...(label === undefined ? {} : { label }),
+    });
   }
 
   return { mappings, errors };
 }
 
+/** Trim, drop control characters, cap. Empty is no label at all. */
+function surfaceLabel(raw: string): string | undefined {
+  const cleaned = raw.replace(CONTROL_CHARS, "").trim();
+  return cleaned === "" ? undefined : cleaned.slice(0, MAX_SURFACE_LABEL);
+}
+
 export function serializeOriginMap(mappings: OriginMapping[]): string {
-  return mappings.map((m) => `${m.origin}=${m.project}`).join("\n");
+  return mappings
+    .map((m) => `${m.origin}=${m.project ?? ""}${m.label === undefined ? "" : `|${m.label}`}`)
+    .join("\n");
 }
 
 /** Exact-origin lookup. No wildcards, no subdomain or port fuzz — see parseOriginMap. */
@@ -137,6 +175,15 @@ export function lookupProject(
 ): string | undefined {
   if (!origin) return undefined;
   return mappings.find((m) => m.origin === origin)?.project;
+}
+
+/** The human name configured for this origin, if any. */
+export function lookupLabel(
+  mappings: OriginMapping[],
+  origin: string | undefined,
+): string | undefined {
+  if (!origin) return undefined;
+  return mappings.find((m) => m.origin === origin)?.label;
 }
 
 // --- options: bridge URL ----------------------------------------------------
@@ -185,7 +232,7 @@ export function normalizeBridgeUrl(input: string): string | null {
   return new URL(withScheme).origin;
 }
 
-// --- which tabs a review may reach ------------------------------------------
+// --- surfaces: one stream per armed tab ------------------------------------
 
 /** What the service worker remembers about a tab that is switched on. */
 export interface TabState {
@@ -193,39 +240,63 @@ export interface TabState {
   origin: string;
   /** From the options map; absent means "the bridge's own cwd". */
   project?: string;
+  /** From the options map: this origin's human name, for `list_surfaces`. */
+  label?: string;
+  /** The page the tab was on when its stream was opened, and its title. Both
+   *  are a snapshot: the stream deliberately survives a same-origin navigation
+   *  (see `streamIdentity`), so they can lag the tab by one navigation. */
+  url?: string;
+  title?: string;
+  /** Chrome's window id — what tells two windows on one site apart. */
+  windowId?: number;
 }
 
 /** Keyed by tab id (as a string — session storage is JSON). */
 export type TabStates = Record<string, TabState>;
 
-/** One SSE stream per project; `""` is "no mapping, so the bridge's own cwd". */
-export const streamKeyOf = (state: TabState): string => state.project ?? "";
-
-/** The distinct origins currently switched on under a stream key. */
-export function originsInBucket(tabs: TabStates, key: string): Set<string> {
-  const origins = new Set<string>();
-  for (const state of Object.values(tabs)) if (streamKeyOf(state) === key) origins.add(state.origin);
-  return origins;
+/**
+ * What a stream was opened FOR. The worker re-opens a tab's stream when this
+ * changes and leaves it alone otherwise — in particular NOT for a same-origin
+ * navigation, because reconnecting mints a new surfaceId and a review aimed at
+ * this tab (possibly the very review that asked it to navigate) would lose the
+ * page it was aimed at.
+ */
+export function streamIdentity(state: TabState): string {
+  return `${state.project ?? ""}\u0000${state.origin}\u0000${state.label ?? ""}`;
 }
 
 /**
- * The tabs a review for `key` may be delivered to.
+ * The `GET /events` URL for one armed tab — including what the bridge lists as
+ * this tab's surface. The worker builds it here so the shape is unit-tested:
+ * everything the agent later sees in `list_surfaces` starts on this line.
  *
- * `""` is not a project — it is "this origin is not in the options map", so the
- * bridge files its notes in its own working directory. EVERY unmapped origin
- * falls into that one bucket, which makes it ambiguous the moment two of them
- * are switched on: a review meant for the bridge's default project would raise
- * the agent's prompt on an unrelated site, and an Approve clicked there resolves
- * the real review. Ambiguity here costs the human-in-the-loop guarantee, so the
- * bucket delivers only while one origin occupies it. Mapping the origin in the
- * options page is the fix — and the honest one.
+ * The token never leaves the worker (a content script lives in a tab, and this
+ * is the credential that decides who may answer the developer's review).
  */
-export function deliverableTabs(tabs: TabStates, key: string): number[] {
-  if (key === "" && originsInBucket(tabs, key).size > 1) return [];
-  return Object.entries(tabs)
-    .filter(([, state]) => streamKeyOf(state) === key)
-    .map(([id]) => Number(id))
-    .filter((id) => Number.isInteger(id));
+export function streamUrl(
+  bridgeUrl: string,
+  tabId: string,
+  state: TabState,
+  token = "",
+): string {
+  const url = new URL(`${bridgeUrl.replace(/\/+$/, "")}/events`);
+  // Capped here as well as at the bridge: a request line is not the place for
+  // a page's idea of a long title.
+  const set = (key: string, value: string | number | undefined, max = 300): void => {
+    if (value === undefined) return;
+    const text = typeof value === "number" ? String(value) : value.replace(CONTROL_CHARS, "").trim();
+    if (text !== "") url.searchParams.set(key, text.slice(0, max));
+  };
+  set("project", state.project, 4000);
+  if (token) set("token", token, 4000);
+  set("origin", state.origin);
+  set("url", state.url, 2000);
+  set("title", state.title);
+  set("label", state.label, MAX_SURFACE_LABEL);
+  set("adapter", "extension");
+  set("windowId", state.windowId);
+  set("tabId", tabId);
+  return url.href;
 }
 
 // --- fetch proxy (content script → service worker) --------------------------
