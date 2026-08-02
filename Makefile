@@ -15,7 +15,7 @@ EXT     := $(REPO)/extension
 PORT    ?= 3499
 PROJECT ?= $(CURDIR)
 
-.PHONY: help install build build-bridge build-extension package check typecheck test e2e run extension-path clean distclean
+.PHONY: help install build build-bridge build-embed build-extension package check typecheck test e2e run extension-path clean distclean
 
 help:
 	@echo "fix-ui"
@@ -23,6 +23,7 @@ help:
 	@echo "  make install          install workspace dependencies (pnpm)"
 	@echo "  make build            build everything: bridge, extension, npm tarballs"
 	@echo "  make build-bridge     compile the bridge daemon to packages/bridge/dist"
+	@echo "  make build-embed      bundle the embed's global script to packages/embed/dist"
 	@echo "  make build-extension  bundle the Chrome extension into extension/dist"
 	@echo "  make package          pack publishable npm tarballs into dist/"
 	@echo
@@ -41,7 +42,7 @@ install:
 
 # The bridge must be built before the extension: the e2e harness and the
 # extension's own build both assume a compiled daemon is available to test against.
-build: build-bridge build-extension package
+build: build-bridge build-embed build-extension package
 	@echo
 	@echo "built:"
 	@echo "  bridge     $(BRIDGE)"
@@ -53,6 +54,12 @@ build: build-bridge build-extension package
 build-bridge:
 	pnpm --filter fixui-bridge build
 
+# The plain-HTML adapter, and what the Vite plugin serves to the browser. The
+# npm tarball is wrong without it: an app would ask for a bundle that is not
+# in the package.
+build-embed:
+	pnpm --filter @hulbu/fixui build
+
 build-extension:
 	pnpm --filter fix-ui-extension build
 
@@ -61,7 +68,7 @@ build-extension:
 # core and embed still export raw .ts (no build, no `types`, no `files`), so
 # only a TypeScript-aware bundler can eat them. Fixing that belongs with the
 # publishing work — see docs/known-gaps.md "Before publishing".
-package: build-bridge
+package: build-bridge build-embed
 	@mkdir -p $(DIST)
 	@rm -f $(DIST)/*.tgz
 	pnpm --filter @hulbu/fixui-core exec pnpm pack --pack-destination $(DIST)
@@ -87,7 +94,7 @@ extension-path:
 	@echo "$(EXT)"
 
 clean:
-	rm -rf $(DIST) packages/bridge/dist extension/dist e2e/fixtures/*.js test-results
+	rm -rf $(DIST) packages/bridge/dist packages/embed/dist extension/dist e2e/fixtures/*.js test-results
 
 distclean: clean
 	rm -rf node_modules packages/*/node_modules extension/node_modules e2e/node_modules
