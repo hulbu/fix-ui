@@ -161,6 +161,22 @@ it("refuses the review channel without the token", async () => {
   expect((await body(verdict)).error).toContain("token");
 });
 
+/** The surface listing says what the developer has open — which page, which
+ *  window, which site. That is disclosure, so it lives behind the same gate as
+ *  the stream it describes. */
+it("refuses the surface listing without the token", async () => {
+  const listed = await fetch(`${base}/surfaces`);
+  expect(listed.status).toBe(401);
+  expect((await body(listed)).error).toContain("token");
+
+  const wrong = await fetch(`${base}/surfaces?token=guess`);
+  expect(wrong.status).toBe(401);
+
+  const allowed = await fetch(`${base}/surfaces?token=${TOKEN}`);
+  expect(allowed.status).toBe(200);
+  expect(await body(allowed)).toEqual({ surfaces: [] });
+});
+
 it("accepts the token in the query string or in the header", async () => {
   const controller = new AbortController();
   const stream = await fetch(`${base}/events?token=${TOKEN}`, { signal: controller.signal });

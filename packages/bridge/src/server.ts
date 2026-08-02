@@ -41,6 +41,7 @@ import {
   DEFAULT_TIMEOUT_SECONDS,
   type ReviewBroker,
   type ReviewOutcome,
+  type SurfaceDescription,
 } from "./broker.js";
 import {
   appendEntry,
@@ -229,6 +230,57 @@ const INVALID_PROJECT = "project must be an absolute path to an existing directo
  *  the inbox is an agent's reading list, not a paste bin. */
 export const MAX_NOTE = 10_000;
 export const MAX_SELECTOR = 2000;
+
+/**
+ * What a page may say about itself on `GET /events` (docs/agent-integration.md
+ * "Surfaces"). Every one of these lands in a listing an agent reads, so they
+ * are capped and stripped like any other browser-authored string — a title is
+ * whatever the page set `document.title` to, and a `label` is free text.
+ * Truncated rather than refused: a long title is no reason to deny a page the
+ * review channel.
+ */
+export const MAX_SURFACE_TEXT = 300;
+export const MAX_SURFACE_URL = 2000;
+/** A `surfaceId` is a UUID the bridge itself minted; anything longer is noise. */
+const MAX_SURFACE_ID = 200;
+
+/** Control characters are what a hostile page would send: a surface is read
+ *  by an agent as one line of description. Strip them, trim, then cap. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
+function surfaceText(value: string | null, max: number): string | undefined {
+  if (value === null) return undefined;
+  const cleaned = value.replace(CONTROL_CHARS, "").trim();
+  return cleaned === "" ? undefined : cleaned.slice(0, max);
+}
+
+/** Chrome's window/tab ids: integers or nothing. */
+function surfaceInt(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+/** The subscriber's self-description, with only the fields it got right. */
+function describeFrom(url: URL): SurfaceDescription {
+  const get = url.searchParams.get.bind(url.searchParams);
+  const adapter = get("adapter");
+  const describe: SurfaceDescription = {};
+  const origin = surfaceText(get("origin"), MAX_SURFACE_TEXT);
+  const pageUrl = surfaceText(get("url"), MAX_SURFACE_URL);
+  const title = surfaceText(get("title"), MAX_SURFACE_TEXT);
+  const label = surfaceText(get("label"), MAX_SURFACE_TEXT);
+  const windowId = surfaceInt(get("windowId"));
+  const tabId = surfaceInt(get("tabId"));
+  if (origin !== undefined) describe.origin = origin;
+  if (pageUrl !== undefined) describe.url = pageUrl;
+  if (title !== undefined) describe.title = title;
+  if (label !== undefined) describe.label = label;
+  if (adapter === "embed" || adapter === "extension") describe.adapter = adapter;
+  if (windowId !== undefined) describe.windowId = windowId;
+  if (tabId !== undefined) describe.tabId = tabId;
+  return describe;
+}
 
 /** Constant-time compare that tolerates unequal lengths. */
 function secretEquals(provided: string, expected: string): boolean {
@@ -468,14 +520,39 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     write(": connected\n\n");
 
     const heartbeat = setInterval(() => write(": heartbeat\n\n"), heartbeatMs);
-    const unsubscribe = broker.subscribe(project, {
-      send: (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
-    });
+    // The query string is how a page introduces itself, so an agent can tell it
+    // apart from the other page on the same project (`GET /surfaces`).
+    const unsubscribe = broker.subscribe(
+      project,
+      { send: (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) },
+      describeFrom(ctx.url),
+    );
     ctx.res.on("close", () => {
       clearInterval(heartbeat);
       unsubscribe();
     });
     // No `end()`: the stream stays open until the page goes away.
+  });
+
+  /**
+   * What the developer has open, so an agent can aim a review at ONE page
+   * instead of every page of a project (docs/agent-integration.md "Surfaces").
+   *
+   * Gated like `/events`: this discloses which sites, which windows and which
+   * page titles are on the developer's screen, and a `surfaceId` is what a
+   * targeted review needs. `?project=` scopes it; without one it answers every
+   * surface, which is how an agent finds the page it never mapped.
+   */
+  api.route("GET", "/surfaces", (ctx) => {
+    if (!authorized(ctx.req, ctx.url)) return ctx.json(401, { ok: false, error: UNAUTHORIZED });
+
+    const requested = ctx.url.searchParams.get("project");
+    if (requested === null || requested === "") {
+      return ctx.json(200, { surfaces: broker.listSurfaces() });
+    }
+    const project = resolveProject(requested, api.defaultProject);
+    if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
+    ctx.json(200, { surfaces: broker.listSurfaces(project) });
   });
 
   /**
@@ -502,6 +579,14 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
       });
     }
 
+    const surfaceId = body.surfaceId;
+    if (surfaceId !== undefined && !isFilledString(surfaceId)) {
+      return ctx.json(400, {
+        ok: false,
+        error: "surfaceId must be a non-empty string from GET /surfaces",
+      });
+    }
+
     const project = resolveProject(body.project, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
@@ -519,6 +604,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
         project,
         prompt: body.prompt,
         ...(typeof body.url === "string" ? { url: body.url } : {}),
+        ...(surfaceId === undefined ? {} : { surfaceId: surfaceId.slice(0, MAX_SURFACE_ID) }),
         timeoutSeconds: timeout ?? DEFAULT_TIMEOUT_SECONDS,
         signal: agentGone.signal,
       });

@@ -38,12 +38,49 @@ export interface ReviewOutcome {
   durationMs: number;
 }
 
+/** Which adapter is holding a surface open — the two halves of the product. */
+export type SurfaceAdapter = "embed" | "extension";
+
+/**
+ * What a page says about itself when it subscribes, so an agent can tell two
+ * connected pages apart (docs/agent-integration.md "Surfaces"). Every field is
+ * optional and every field is UNTRUSTED: it crossed from a browser, and the
+ * caller is expected to have capped and sanitized it (server.ts does).
+ */
+export interface SurfaceDescription {
+  origin?: string;
+  url?: string;
+  title?: string;
+  /** A human name for this page — `initFixUi({label})`, or the options map. */
+  label?: string;
+  adapter?: SurfaceAdapter;
+  /** Chrome's own ids, so two windows on one site are told apart honestly. */
+  windowId?: number;
+  tabId?: number;
+}
+
+/** One connected page that can host a review. */
+export interface Surface extends SurfaceDescription {
+  /** Bridge-generated, per subscription: the handle `request_review` aims at. */
+  surfaceId: string;
+  project: string;
+  connectedAt: string;
+}
+
 export interface ReviewRequest {
   /** Resolved absolute project directory — the broker's key for everything. */
   project: string;
   prompt: string;
   url?: string;
   timeoutSeconds: number;
+  /**
+   * Aim the review at ONE connected page instead of all of the project's
+   * (docs/agent-integration.md "Surfaces"). An id that is unknown, gone, or on
+   * a different project answers `no-reviewer` — never a quiet broadcast to
+   * everybody, because a targeting mistake the agent cannot see is worse than
+   * one it can.
+   */
+  surfaceId?: string;
   /**
    * Aborts when the agent that asked for the review is gone (its HTTP call
    * dropped, its harness restarted). The review ends there: nothing would ever
@@ -53,10 +90,12 @@ export interface ReviewRequest {
   signal?: AbortSignal;
 }
 
-export type ReviewEvent = "review-requested" | "review-cancelled";
+/** `surface` is the handshake — the id this subscription was given, sent before
+ *  anything else; the other two are the review itself. */
+export type ChannelEvent = "surface" | "review-requested" | "review-cancelled";
 
 export interface ReviewSubscriber {
-  send(event: ReviewEvent, data: JsonRecord): void;
+  send(event: ChannelEvent, data: JsonRecord): void;
 }
 
 /** A second review while one is pending for the same project. An error, never
@@ -69,9 +108,23 @@ export class BusyError extends Error {
 }
 
 export interface ReviewBroker {
-  /** Watch a project; the returned function stops watching. A review pending
-   *  for that project is replayed to the new subscriber immediately. */
-  subscribe(project: string, subscriber: ReviewSubscriber): () => void;
+  /**
+   * Watch a project; the returned function stops watching. The subscription is
+   * a *surface*: it is given an id (sent as the `surface` event, before
+   * anything else) and appears in `listSurfaces` until it goes away.
+   *
+   * An UNTARGETED review pending for that project is replayed to the new
+   * subscriber immediately — a stream can drop mid-review and the page that
+   * comes back has to re-arm. A targeted one is not: its surface is gone, and
+   * the page that reconnected is a different one.
+   */
+  subscribe(
+    project: string,
+    subscriber: ReviewSubscriber,
+    describe?: SurfaceDescription,
+  ): () => void;
+  /** Connected pages, newest first; scoped to one project when given. */
+  listSurfaces(project?: string): Surface[];
   /** Resolves only when the review resolves. Throws `BusyError` when the
    *  project already has one pending. */
   requestReview(request: ReviewRequest): Promise<ReviewOutcome>;
@@ -89,12 +142,21 @@ interface Pending extends ReviewRequest {
   settle(outcome: ReviewOutcome): void;
 }
 
+/** A surface and the stream it speaks through. The subscriber is deliberately
+ *  not part of `Surface`: that shape is answered to an agent over HTTP. */
+interface Connected {
+  surface: Surface;
+  subscriber: ReviewSubscriber;
+}
+
 export function createReviewBroker(): ReviewBroker {
-  const subscribers = new Map<string, Set<ReviewSubscriber>>();
+  /** surfaceId → the page holding it. Insertion order is connection order,
+   *  which is what "newest first" reverses. */
+  const surfaces = new Map<string, Connected>();
   const pending = new Map<string, Pending>(); // project → the one review it may have
 
   /** One subscriber's dead socket must not cost the others their event. */
-  function deliver(subscriber: ReviewSubscriber, event: ReviewEvent, data: JsonRecord): void {
+  function deliver(subscriber: ReviewSubscriber, event: ChannelEvent, data: JsonRecord): void {
     try {
       subscriber.send(event, data);
     } catch {
@@ -102,8 +164,31 @@ export function createReviewBroker(): ReviewBroker {
     }
   }
 
-  function broadcast(project: string, event: ReviewEvent, data: JsonRecord): void {
-    for (const subscriber of subscribers.get(project) ?? []) deliver(subscriber, event, data);
+  function broadcast(project: string, event: ChannelEvent, data: JsonRecord): void {
+    for (const { surface, subscriber } of surfaces.values()) {
+      if (surface.project === project) deliver(subscriber, event, data);
+    }
+  }
+
+  /** The one surface a review names, or undefined when it names none, names one
+   *  that has gone away, or names one belonging to another project. */
+  function targetOf(review: { project: string; surfaceId?: string }): Connected | undefined {
+    if (review.surfaceId === undefined) return undefined;
+    const connected = surfaces.get(review.surfaceId);
+    return connected?.surface.project === review.project ? connected : undefined;
+  }
+
+  /** Where a review's events go: exactly its surface, or the whole project. */
+  function announce(review: Pending, event: ChannelEvent, data: JsonRecord): void {
+    if (review.surfaceId === undefined) {
+      broadcast(review.project, event, data);
+      return;
+    }
+    const target = targetOf(review);
+    if (target) deliver(target.subscriber, event, data);
+    // Otherwise nothing: the page it was aimed at is gone. Delivering to the
+    // rest of the project instead would be exactly the silent mis-aim that
+    // `no-reviewer` exists to prevent.
   }
 
   function requestedPayload(review: Pending): JsonRecord {
@@ -139,7 +224,9 @@ export function createReviewBroker(): ReviewBroker {
     if (pending.get(review.project) !== review) return false;
     pending.delete(review.project);
     clearTimeout(review.timer);
-    broadcast(review.project, "review-cancelled", { reviewId: review.id });
+    // Stood down where it was raised — a targeted review's banner is only up on
+    // the surface it named.
+    announce(review, "review-cancelled", { reviewId: review.id });
     return true;
   }
 
@@ -193,31 +280,62 @@ export function createReviewBroker(): ReviewBroker {
       .filter((entry): entry is JsonRecord => entry !== undefined);
   }
 
+  const noReviewer = (): ReviewOutcome => ({
+    verdict: "no-reviewer",
+    entries: [],
+    durationMs: 0,
+  });
+
+  function watching(project: string): boolean {
+    for (const { surface } of surfaces.values()) if (surface.project === project) return true;
+    return false;
+  }
+
   return {
-    subscribe(project, subscriber) {
-      const watchers = subscribers.get(project) ?? new Set<ReviewSubscriber>();
-      subscribers.set(project, watchers);
-      watchers.add(subscriber);
+    subscribe(project, subscriber, describe = {}) {
+      const surfaceId = randomUUID();
+      const connected: Connected = {
+        surface: { ...describe, surfaceId, project, connectedAt: new Date().toISOString() },
+        subscriber,
+      };
+      surfaces.set(surfaceId, connected);
+      // First, before anything else on this stream: the page cannot report the
+      // id it was given if it learns it after the events that use it.
+      deliver(subscriber, "surface", { surfaceId });
 
       // A reload or a navigation drops the stream mid-review. The page that
-      // comes back must re-arm itself, so it gets the pending review on connect.
+      // comes back must re-arm itself, so it gets the pending review on connect
+      // — unless that review named a surface, in which case the page in front
+      // of us is not the one it was aimed at.
       const review = pending.get(project);
-      if (review) deliver(subscriber, "review-requested", requestedPayload(review));
+      if (review?.surfaceId === undefined && review) {
+        deliver(subscriber, "review-requested", requestedPayload(review));
+      }
 
       return () => {
-        watchers.delete(subscriber);
-        if (watchers.size === 0 && subscribers.get(project) === watchers) {
-          subscribers.delete(project); // idle projects leave no trace
-        }
+        // Identity, not id: a surface that was already replaced is not ours to
+        // remove (and none is, today — ids are fresh per subscription).
+        if (surfaces.get(surfaceId) === connected) surfaces.delete(surfaceId);
       };
+    },
+
+    listSurfaces(project) {
+      const listed: Surface[] = [];
+      for (const { surface } of surfaces.values()) {
+        if (project === undefined || surface.project === project) listed.push({ ...surface });
+      }
+      return listed.reverse(); // newest first
     },
 
     requestReview(request) {
       if (pending.has(request.project)) return Promise.reject(new BusyError());
-      // Nobody is watching: answer now so the agent can fall back to asking in
-      // the terminal instead of hanging for ten minutes.
-      if ((subscribers.get(request.project)?.size ?? 0) === 0) {
-        return Promise.resolve({ verdict: "no-reviewer", entries: [], durationMs: 0 });
+      // Nobody is watching — or nobody is watching at the surface the agent
+      // aimed at. Answer now so it can fall back to asking in the terminal (or
+      // call `list_surfaces` and aim again) instead of hanging for ten minutes.
+      if (request.surfaceId === undefined) {
+        if (!watching(request.project)) return Promise.resolve(noReviewer());
+      } else if (!targetOf(request)) {
+        return Promise.resolve(noReviewer());
       }
 
       let settle!: (outcome: ReviewOutcome) => void;
@@ -239,7 +357,7 @@ export function createReviewBroker(): ReviewBroker {
       // `once`: the request's own signal dies with the request, and a late
       // abort (the normal end of every answered call) finds nothing to end.
       request.signal?.addEventListener("abort", () => abandon(review), { once: true });
-      broadcast(request.project, "review-requested", requestedPayload(review));
+      announce(review, "review-requested", requestedPayload(review));
       return held;
     },
 
@@ -278,7 +396,7 @@ export function createReviewBroker(): ReviewBroker {
         });
       }
       pending.clear();
-      subscribers.clear();
+      surfaces.clear();
     },
   };
 }

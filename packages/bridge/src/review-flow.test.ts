@@ -32,6 +32,8 @@ interface SseStream {
   readonly comments: string[];
   /** Resolves with the data of the nth (1-based) event of this name. */
   next(event: string, nth?: number): Promise<Record<string, any>>;
+  /** The id the bridge assigned this subscription — its first event. */
+  surfaceId(): Promise<string>;
   close(): void;
 }
 
@@ -63,9 +65,16 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-/** Open `GET /events` and parse the SSE frames as they arrive. */
-async function openStream(project?: string): Promise<SseStream> {
-  const query = project ? `?project=${encodeURIComponent(project)}` : "";
+/** Open `GET /events` and parse the SSE frames as they arrive. `describe` is
+ *  what a page says about itself — the surface listing an agent targets on. */
+async function openStream(
+  project?: string,
+  describe: Record<string, string | number> = {},
+): Promise<SseStream> {
+  const params = new URLSearchParams();
+  if (project) params.set("project", project);
+  for (const [key, value] of Object.entries(describe)) params.set(key, String(value));
+  const query = params.toString() === "" ? "" : `?${params.toString()}`;
   const controller = new AbortController();
   const res = await fetch(`${base}/events${query}`, { signal: controller.signal });
   expect(res.status).toBe(200);
@@ -105,6 +114,9 @@ async function openStream(project?: string): Promise<SseStream> {
       const matching = (): SseEvent[] => events.filter((entry) => entry.event === event);
       await waitFor(() => matching().length >= nth, `SSE ${event} #${nth}`);
       return matching()[nth - 1]!.data;
+    },
+    async surfaceId() {
+      return String((await stream.next("surface")).surfaceId);
     },
     close() {
       controller.abort();
@@ -356,7 +368,170 @@ it("keeps the stream alive with comment-line heartbeats", async () => {
 
   await waitFor(() => stream.comments.length >= 2, "two heartbeats");
   for (const comment of stream.comments) expect(comment.startsWith(":")).toBe(true);
-  expect(stream.events).toEqual([]); // comments are not events
+  // Comments are not events; the only event a quiet stream carries is the
+  // `surface` handshake it opened with.
+  expect(stream.events.map((event) => event.event)).toEqual(["surface"]);
+});
+
+// ── Surfaces (docs/agent-integration.md "Surfaces") ─────────────────────────
+// Routing by project alone cannot tell two windows on the same site apart. A
+// surface is one connected page, and it is what an agent enumerates and aims at.
+
+async function surfaces(project?: string): Promise<Record<string, any>[]> {
+  const query = project ? `?project=${encodeURIComponent(project)}` : "";
+  const res = await fetch(`${base}/surfaces${query}`);
+  expect(res.status).toBe(200);
+  return (await body(res)).surfaces as Record<string, any>[];
+}
+
+it("GET /surfaces lists every connected page, newest first, and forgets it on disconnect", async () => {
+  const alpha = await openStream(projectDir, {
+    origin: "http://localhost:3000",
+    url: "http://localhost:3000/pricing",
+    title: "Pricing",
+    label: "port 3000",
+    adapter: "extension",
+    windowId: 7,
+    tabId: 42,
+  });
+  const beta = await openStream(otherDir, { origin: "http://localhost:4001", adapter: "embed" });
+
+  const all = await surfaces();
+  expect(all).toHaveLength(2);
+  expect(all[0]).toMatchObject({ surfaceId: await beta.surfaceId(), project: otherDir });
+  expect(all[1]).toMatchObject({
+    surfaceId: await alpha.surfaceId(),
+    project: projectDir,
+    origin: "http://localhost:3000",
+    url: "http://localhost:3000/pricing",
+    title: "Pricing",
+    label: "port 3000",
+    adapter: "extension",
+    windowId: 7,
+    tabId: 42,
+  });
+  expect(new Date(all[1]!.connectedAt).toISOString()).toBe(all[1]!.connectedAt);
+
+  // Scoped to one project when asked.
+  expect((await surfaces(projectDir)).map((s) => s.surfaceId)).toEqual([await alpha.surfaceId()]);
+
+  // A stream that goes away takes its surface with it.
+  beta.close();
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && (await surfaces()).length > 1) {
+    await new Promise((done) => setTimeout(done, 20));
+  }
+  expect((await surfaces()).map((s) => s.surfaceId)).toEqual([await alpha.surfaceId()]);
+});
+
+it("caps and sanitizes what a page says about itself, and drops what it cannot parse", async () => {
+  const stream = await openStream(projectDir, {
+    origin: "http://localhost:3000",
+    title: `Long ${"t".repeat(5000)}`,
+    label: "line\nbreak ",
+    adapter: "not-an-adapter",
+    windowId: "seven",
+    tabId: "3.5",
+  });
+  await stream.surfaceId();
+
+  const [surface] = await surfaces(projectDir);
+  expect(surface!.title.length).toBeLessThanOrEqual(300);
+  expect(surface!.title.startsWith("Long ttt")).toBe(true);
+  expect(surface!.label).toBe("linebreak"); // control characters never reach an agent
+  expect(surface!.adapter).toBeUndefined();
+  expect(surface!.windowId).toBeUndefined();
+  expect(surface!.tabId).toBeUndefined();
+});
+
+it("two windows on the same project and origin are individually addressable", async () => {
+  const shared = { origin: "http://localhost:3000", adapter: "embed" as const };
+  const one = await openStream(projectDir, { ...shared, label: "window one" });
+  const two = await openStream(projectDir, { ...shared, label: "window two" });
+  const [idOne, idTwo] = [await one.surfaceId(), await two.surfaceId()];
+  expect(idOne).not.toBe(idTwo);
+
+  // The agent enumerates, then aims at the second window.
+  const listed = await surfaces(projectDir);
+  expect(listed.map((s) => s.label)).toEqual(["window two", "window one"]);
+
+  const call = requestReview({ prompt: "look at window two", surfaceId: idTwo, timeoutSeconds: 5 });
+  const requested = await two.next("review-requested");
+  expect(requested.prompt).toBe("look at window two");
+
+  // …and only at the second window.
+  await new Promise((done) => setTimeout(done, 100));
+  expect(one.events.filter((event) => event.event === "review-requested")).toEqual([]);
+
+  await postVerdict(requested.reviewId, { verdict: "approved", entryIds: [] });
+  expect((await body(await call)).verdict).toBe("approved");
+});
+
+it("an untargeted review still reaches every surface of its project, and no other project's", async () => {
+  const one = await openStream(projectDir, { label: "one" });
+  const two = await openStream(projectDir, { label: "two" });
+  const elsewhere = await openStream(otherDir, { label: "elsewhere" });
+  await elsewhere.surfaceId();
+
+  const call = requestReview({ prompt: "everyone look", timeoutSeconds: 5 });
+  const requested = await one.next("review-requested");
+  expect((await two.next("review-requested")).reviewId).toBe(requested.reviewId);
+  expect(elsewhere.events.filter((event) => event.event === "review-requested")).toEqual([]);
+
+  await postVerdict(requested.reviewId, { verdict: "approved", entryIds: [] });
+  expect((await body(await call)).verdict).toBe("approved");
+});
+
+it("an unknown or foreign surfaceId is no-reviewer — never a silent broadcast", async () => {
+  const here = await openStream(projectDir, { label: "here" });
+  const there = await openStream(otherDir, { label: "there" });
+  await here.surfaceId();
+
+  const unknown = await requestReview({ prompt: "aimed at nobody", surfaceId: "not-a-surface" });
+  expect(unknown.status).toBe(200);
+  expect(await body(unknown)).toEqual({ verdict: "no-reviewer", entries: [], durationMs: 0 });
+
+  // A surface that exists, but on another project: still no-reviewer. Targeting
+  // never crosses the project the review's notes and record belong to.
+  const foreign = await requestReview({
+    prompt: "aimed across projects",
+    surfaceId: await there.surfaceId(),
+  });
+  expect(await body(foreign)).toEqual({ verdict: "no-reviewer", entries: [], durationMs: 0 });
+
+  await new Promise((done) => setTimeout(done, 100));
+  for (const stream of [here, there]) {
+    expect(stream.events.filter((event) => event.event === "review-requested")).toEqual([]);
+  }
+
+  // The project was never held busy by either attempt.
+  const real = requestReview({ prompt: "for real", timeoutSeconds: 5 });
+  const requested = await here.next("review-requested");
+  await postVerdict(requested.reviewId, { verdict: "approved", entryIds: [] });
+  expect((await body(await real)).verdict).toBe("approved");
+
+  expect((await requestReview({ prompt: "bad shape", surfaceId: 42 })).status).toBe(400);
+});
+
+it("a targeted review cancels on the surface it was sent to, and busy stays per project", async () => {
+  const one = await openStream(projectDir, { label: "one" });
+  const two = await openStream(projectDir, { label: "two" });
+  await one.surfaceId();
+
+  const call = requestReview({
+    prompt: "only window two",
+    surfaceId: await two.surfaceId(),
+    timeoutSeconds: 0.2,
+  });
+
+  const { reviewId } = await two.next("review-requested");
+  // Targeting does not narrow `busy`: the project has one review at a time.
+  const second = await requestReview({ prompt: "same project", surfaceId: await one.surfaceId() });
+  expect(second.status).toBe(409);
+
+  expect((await body(await call)).verdict).toBe("timeout");
+  expect(await two.next("review-cancelled")).toEqual({ reviewId });
+  expect(one.events.filter((event) => event.event === "review-cancelled")).toEqual([]);
 });
 
 it("rejects malformed review requests and verdicts", async () => {
