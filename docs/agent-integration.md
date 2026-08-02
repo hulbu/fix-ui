@@ -85,6 +85,7 @@ Tool shape:
 request_review({
   prompt:  "Review the new pricing table",
   url?:    "http://localhost:4001/#pricing",   // adapter navigates/anchors
+  surfaceId?: "…",                             // one page; see "Surfaces"
   timeoutSeconds?: 600,
 })
 → { verdict: "approved" | "changes" | "timeout" | "no-reviewer",
@@ -107,22 +108,85 @@ Engineering notes:
   while one is pending fails fast with a `busy` tool error — not a verdict
   (scope discipline; queues are v2).
 
+## Surfaces — which page, exactly
+
+A **surface** is one connected page that can host a review: one `GET /events`
+subscription. The developer has several Chrome windows and the same app on
+two ports; "the project" does not name any one of them, so the bridge gives
+each subscription an id and lets the agent both enumerate and aim.
+
+```
+list_surfaces({ project? })
+→ { surfaces: [{
+      surfaceId:   "9f0c…",          // what request_review aims at
+      project:     "/Users/me/app",  // where its notes and record go
+      origin?:     "http://localhost:4001",
+      url?:        "http://localhost:4001/pricing",
+      title?:      "Pricing",
+      label?:      "staging",        // initFixUi({label}) / the options map
+      adapter?:    "embed" | "extension",
+      windowId?:   7,   tabId?: 42,  // the extension's real Chrome ids
+      connectedAt: "2026-08-01T…Z",
+    }, …] }                          // newest first
+```
+
+Omit `project` to see every connected page (each names its own project);
+give one to scope the list. The workflow the tool descriptions teach: call it
+when more than one page could be the one you mean, or when a `request_review`
+came back `no-reviewer` — then pass the `surfaceId` you picked.
+
+**The targeting rule.** `request_review({surfaceId})` delivers
+`review-requested` (and that review's `review-cancelled`) to exactly that
+surface. A `surfaceId` that is unknown, already disconnected, or on a
+different project than the review answers `{verdict:"no-reviewer"}`
+immediately — **never a silent broadcast to everybody**. A mis-aim the agent
+can see is worth more than one it cannot, and `list_surfaces` is the fix in
+the agent's own hands. Without a `surfaceId` nothing changes: every
+subscriber of the project is asked, exactly as before.
+
+Two more consequences worth knowing:
+
+- **Busy is still per project.** One review at a time, however narrowly it is
+  aimed; a second `request_review` for that project fails `busy` even when it
+  names a different surface.
+- **A targeted review is not replayed on reconnect.** An untargeted one still
+  is (below) — but a stream that dropped and came back is a *new* surface, and
+  handing it a review aimed at the page it replaced would be the mis-aim this
+  rule exists to prevent. The extension keeps its surface across a same-origin
+  navigation (the worker owns the stream, not the page), so `{surfaceId, url}`
+  works there; with the embed the navigation ends the surface, so pair `url`
+  with an untargeted review.
+
 The adapter side of the channel (bridge HTTP, consumed by embed and
 extension alike):
 
 - `GET /events?project=<dir>&token=<token>` — SSE (`project` optional, same
   fallback as entries: the bridge's cwd; `token` required — see "Privacy
-  and trust"). Events: `review-requested` `{ reviewId, prompt, url?,
-  timeoutSeconds }` — the plugin activates itself, banner up, picker armed,
-  navigating/anchoring to `url` when given — and `review-cancelled`
-  `{ reviewId }` (timeout or agent abort; stand the banner down).
+  and trust"). Optional descriptive parameters — `origin`, `url`, `title`,
+  `label`, `adapter`, `windowId`, `tabId` — are what the page becomes in
+  `list_surfaces`; all of them are capped and control-stripped at the
+  boundary, because they crossed from a browser. Events: `surface`
+  `{ surfaceId }` — **always first**, the id the bridge assigned this
+  subscription (a page that never sees one is talking to an older bridge and
+  can only be reached by untargeted reviews) — `review-requested`
+  `{ reviewId, prompt, url?, timeoutSeconds }` — the plugin activates itself,
+  banner up, picker armed, navigating/anchoring to `url` when given — and
+  `review-cancelled` `{ reviewId }` (timeout or agent abort; stand the banner
+  down).
   Comment-line heartbeats every 15s keep the stream alive through
-  intermediaries. A review still pending for that project is replayed to
-  every new subscriber the moment it connects: a stream can drop mid-review
+  intermediaries. An UNTARGETED review still pending for that project is
+  replayed to every new subscriber the moment it connects: a stream can drop mid-review
   — a reload, or the very navigation the review's `url` asked for — and the
   page that comes back has to re-arm itself. A replay is a *resume*: the
   page keeps the entry ids it has already collected for that `reviewId`,
-  so the verdict still names the notes taken before the drop.
+  so the verdict still names the notes taken before the drop. (A targeted
+  review is not replayed — the page that reconnected is a new surface; see
+  "Surfaces".)
+- `GET /surfaces?project=<dir>&token=<token>` — the connected pages, newest
+  first, `project` optional (absent → all of them). Token-gated like the
+  stream: it discloses which sites, windows and page titles are on the
+  developer's screen, and a `surfaceId` is what a targeted review needs. This
+  is the route `list_surfaces` answers from in proxy mode.
 - Notes dropped during a review are ordinary `POST /entries`; the page
   tracks the ids it created.
 - `POST /reviews/:reviewId/verdict?token=<token>` `{ verdict: "approved" |
@@ -138,18 +202,30 @@ extension alike):
 ## Claude Code specifics
 
 - Bridge registers as a local MCP server, exposing `list_feedback`,
-  `resolve_feedback`, `request_review`. Nothing is published yet, so it is
-  registered from source:
+  `resolve_feedback`, `list_surfaces`, `request_review`. Nothing is
+  published yet, so it is registered from source:
 
   ```bash
   claude mcp add fixui -- node /abs/path/to/fix-ui/packages/bridge/dist/cli.js
   ```
 
   Once it is on npm that becomes `claude mcp add fixui -- npx fixui-bridge`.
+- `list_surfaces` is the one tool whose HTTP route is token-gated, which a
+  **proxy** instance cannot always satisfy: it has no way to read a daemon's
+  `.fix-ui.token` in another project. It uses `FIXUI_TOKEN` when both
+  processes share one, else the token file in its own cwd (the daemon runs in
+  this same project — two sessions on one repo). With neither, the tool says
+  so rather than reporting an empty browser.
 - The inbox path follows the project: bridge resolves the target project
   from the adapter's wire-level `project` field (the embed passes
   `initFixUi({ project })` when set; the extension's options page maps
   origins to project directories; absent → the bridge's cwd).
+- Naming a page for `list_surfaces` is the same two places: the embed takes
+  `initFixUi({ label })` (origin, href and title it reads off the page), and
+  the extension's options map takes a trailing `|label` —
+  `http://localhost:4001=/Users/me/app|staging`, or `origin=|label` to name
+  an origin without mapping it. The extension also reports Chrome's own
+  window and tab ids, which is what tells two windows on one site apart.
 - Suggested CLAUDE.md line for consuming projects: `"fix ui" → read
   .fix-ui.jsonl (or fixui list_feedback) and fix entries; after UI work,
   call request_review before claiming done.`

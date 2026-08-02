@@ -40,10 +40,22 @@ were fixed on the branch; these are the residue.
   `no-reviewer` with a reviewer connected.
 - **`broker.stop()` never broadcasts `review-cancelled`**, so a page's
   banner outlives the daemon.
-- **Two unmapped origins armed at once ⇒ no delivery and no signal.** The
-  ambiguity is resolved safely (deliver to neither), but the agent's call
-  then sits held until timeout with nothing on screen. Users need to be
-  told to map the origin.
+- ~~**Two unmapped origins armed at once ⇒ no delivery and no signal.**~~
+  Superseded: the extension now opens one stream per armed tab, so every tab
+  is its own surface and a review reaches the tab it names (or every tab of
+  the project, if it names none). The `""`-bucket ambiguity rule it needed —
+  and the silence it caused — are gone.
+- **A targeted review does not survive its page reloading.** A surface is one
+  connection; a reload makes a new one, and the bridge deliberately does not
+  replay a targeted review to it (that page is not the one the review named).
+  With the extension the worker owns the stream, so a same-origin navigation
+  keeps the surface; with the embed, pair `url` with an *untargeted* review.
+  Documented in agent-integration.md "Surfaces"; a resumable surface id is
+  the v2 shape.
+- **The extension's `url`/`title` in `list_surfaces` are a snapshot.** They
+  are what the tab showed when its stream opened, because re-connecting on
+  every navigation would mint a new surfaceId and drop any review aimed at
+  that tab. `origin`, `windowId`, `tabId` and `label` are always current.
 - **Enabling a destroyed picker resurrects it without styles**, leaving
   the page unclickable with no visible UI.
 
@@ -67,9 +79,14 @@ were fixed on the branch; these are the residue.
   only, silently.
 - `launchWithExtension()` failures degrade the whole extension spec to a
   green skip. Narrow the catch to the known load error.
-- Untested: body-form `DELETE` notification, same-project multi-subscriber
-  and cross-project SSE isolation, the bridge's catch-all rejection net,
-  `listUrl`'s already-has-a-query branch.
+- Untested: body-form `DELETE` notification, the bridge's catch-all
+  rejection net, `listUrl`'s already-has-a-query branch. (Same-project
+  multi-subscriber and cross-project SSE isolation are now covered by the
+  surfaces tests.)
+- The extension's per-tab surfaces are unit-tested (`streamUrl`,
+  `streamIdentity`) and exercised end to end only for picking: no e2e opens
+  two extension tabs and aims a review at one. The embed e2e covers that
+  path.
 
 ## Before publishing
 

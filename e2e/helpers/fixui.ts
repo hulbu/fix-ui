@@ -33,13 +33,21 @@ export const test = base.extend<{ bridge: Bridge }>({
 export { expect } from "@playwright/test";
 export type { Bridge, JsonRecord } from "./bridge";
 
-/** A fixture page wired to this test's bridge, project and review token. */
-export function fixtureUrl(baseURL: string, file: string, bridge: Bridge): string {
+/** A fixture page wired to this test's bridge, project and review token.
+ *  `extra` is anything else the page reads off its own URL — `label`, which the
+ *  fixture hands to `initFixUi` as this surface's name. */
+export function fixtureUrl(
+  baseURL: string,
+  file: string,
+  bridge: Bridge,
+  extra: Record<string, string> = {},
+): string {
   const query = new URLSearchParams({
     bridge: bridge.url,
     project: bridge.project,
     // A real app bakes this in at build time; a fixture page has a query string.
     token: bridge.token,
+    ...extra,
   });
   return `${baseURL}/${file}?${query.toString()}`;
 }
@@ -52,11 +60,41 @@ export function fixtureUrl(baseURL: string, file: string, bridge: Bridge): strin
  * arrive only after the bridge registered the subscriber (both happen in one
  * synchronous turn of the daemon's request handler).
  */
-export async function openFixture(page: Page, baseURL: string, file: string, bridge: Bridge) {
+export async function openFixture(
+  page: Page,
+  baseURL: string,
+  file: string,
+  bridge: Bridge,
+  extra: Record<string, string> = {},
+) {
   const connected = page.waitForResponse((res) => res.url().includes("/events"));
-  const response = await page.goto(fixtureUrl(baseURL, file, bridge));
+  const response = await page.goto(fixtureUrl(baseURL, file, bridge, extra));
   await connected;
   return response;
+}
+
+/** One connected page, as the agent's `list_surfaces` sees it. */
+export interface Surface extends JsonRecord {
+  surfaceId: string;
+  project: string;
+  origin?: string;
+  url?: string;
+  title?: string;
+  label?: string;
+  adapter?: "embed" | "extension";
+}
+
+/**
+ * What the agent can see: `GET /surfaces` is the HTTP route behind the
+ * `list_surfaces` MCP tool (proxy mode literally calls it). Token-gated, like
+ * the stream it describes.
+ */
+export async function listSurfaces(bridge: Bridge, project?: string): Promise<Surface[]> {
+  const query = new URLSearchParams({ token: bridge.token });
+  if (project) query.set("project", project);
+  const res = await fetch(`${bridge.url}/surfaces?${query.toString()}`);
+  if (!res.ok) throw new Error(`GET /surfaces answered ${res.status}`);
+  return ((await res.json()) as { surfaces: Surface[] }).surfaces;
 }
 
 /** The user's route into picking: chip → notes panel → "Pick an element". */
@@ -104,7 +142,7 @@ export interface HeldReview {
  */
 export function requestReview(
   bridge: Bridge,
-  body: { prompt: string; url?: string; timeoutSeconds?: number },
+  body: { prompt: string; url?: string; surfaceId?: string; timeoutSeconds?: number },
 ): HeldReview {
   let settled = false;
   const outcome = fetch(`${bridge.url}/reviews`, {

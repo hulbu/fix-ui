@@ -49,7 +49,7 @@ Two activation directions, non-negotiable in every adapter:
 | `@hulbu/fixui-core` | Picker, selector builder, entry schema, transport client. No DOM ownership opinions — adapters decide where UI mounts. |
 | `@hulbu/fixui` (npm embed) | One-line install for apps you own (`initFixUi()` in dev builds). Successor of hulbu's `tools/ui-feedback`. |
 | fix-ui extension (Chrome) | Same core on *any* site — no code changes to the target app. |
-| `fixui-bridge` | Tiny local daemon: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `request_review`). |
+| `fixui-bridge` | Tiny local daemon: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `list_surfaces`, `request_review`). |
 
 Why both adapters exist: the embed reaches every user of an app that ships
 it (including browsers without extensions); the extension reaches every
@@ -128,7 +128,9 @@ it off.
 **Use the embed in an app.** `initFixUi({ project: "/abs/path/to/repo",
 token: process.env.FIXUI_TOKEN })` in a dev-only code path, or `<FixUi />`
 from `@hulbu/fixui/react`, which is safe to leave in a root layout: it
-no-ops in a production build.
+no-ops in a production build. Add `label: "port 4001"` when you run the same
+app more than once — the agent lists connected pages with `list_surfaces` and
+can send a review to exactly one of them.
 
 ## Origin
 

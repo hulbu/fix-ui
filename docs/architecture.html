@@ -900,8 +900,9 @@ Origins → projects
           <tr><td class="mono">POST /entries</td><td>Save a note. Returns the entry as stored.</td><td class="no">open</td></tr>
           <tr><td class="mono">GET /entries</td><td>List a project's inbox — the saved-notes panel.</td><td class="no">open</td></tr>
           <tr><td class="mono">DELETE /entries/:id</td><td>Remove one line.</td><td class="no">open</td></tr>
-          <tr><td class="mono">GET /events</td><td>SSE. Carries <code>review-requested</code> and <code>review-cancelled</code>, replays a pending review to anyone who reconnects.</td><td class="yes">token</td></tr>
-          <tr><td class="mono">POST /reviews</td><td>The agent side of a review. Held open until answered.</td><td class="no">open</td></tr>
+          <tr><td class="mono">GET /events</td><td>SSE. Answers with the connection's <code>surface</code> id, then carries <code>review-requested</code> and <code>review-cancelled</code>; replays a pending untargeted review to anyone who reconnects. Optional query parameters (<code>origin</code>, <code>url</code>, <code>title</code>, <code>label</code>, <code>adapter</code>, <code>windowId</code>, <code>tabId</code>) are how the page describes itself.</td><td class="yes">token</td></tr>
+          <tr><td class="mono">GET /surfaces</td><td>The pages currently connected, newest first — what the agent aims a review at. Discloses what you have open, so it is gated.</td><td class="yes">token</td></tr>
+          <tr><td class="mono">POST /reviews</td><td>The agent side of a review. Held open until answered. Optional <code>surfaceId</code> aims it at one page.</td><td class="no">open</td></tr>
           <tr><td class="mono">POST /reviews/:id/verdict</td><td>Approve or request changes.</td><td class="yes">token</td></tr>
           <tr><td class="mono">GET /healthz</td><td>Identity probe — how a second instance recognizes the daemon.</td><td class="no">open</td></tr>
         </tbody>
@@ -915,7 +916,8 @@ Origins → projects
         <tbody>
           <tr><td class="mono">list_feedback</td><td>The project's entries, structured — no file paths to know.</td></tr>
           <tr><td class="mono">resolve_feedback</td><td>Removes an entry once it's fixed.</td></tr>
-          <tr><td class="mono">request_review</td><td>Blocks until you answer. Returns your verdict, the notes you left, and how long you took. Sends progress notifications while waiting so long reviews don't trip client timeouts.</td></tr>
+          <tr><td class="mono">list_surfaces</td><td>Every page connected to the bridge, with its project, window, title and label. What the agent reads when more than one page could be the one you mean — or when a review came back <code>no-reviewer</code>.</td></tr>
+          <tr><td class="mono">request_review</td><td>Blocks until you answer. Returns your verdict, the notes you left, and how long you took. Sends progress notifications while waiting so long reviews don't trip client timeouts. With a <code>surfaceId</code> it asks exactly one page; an unknown one answers <code>no-reviewer</code> rather than asking everybody.</td></tr>
           <tr><td class="mono">feedback/updated</td><td>A notification, not a tool — fires when the inbox changes. It cannot start a turn; it only helps harnesses that choose to watch.</td></tr>
         </tbody>
       </table>
@@ -926,7 +928,7 @@ Origins → projects
       <li><b>approved</b> — you're happy. The loop closes.</li>
       <li><b>changes</b> — paired with the notes you left. This is the actionable one; the agent treats the entries as the change request and keeps working.</li>
       <li><b>timeout</b> — nobody answered in time. A first-class outcome, not an error.</li>
-      <li><b>no-reviewer</b> — no page was listening, so the agent doesn't hang waiting for one. It falls back to asking you in the terminal.</li>
+      <li><b>no-reviewer</b> — no page was listening — or the one page the agent named is closed or gone — so it doesn't hang waiting. It looks at <code>list_surfaces</code> and aims again, or falls back to asking you in the terminal.</li>
     </ul>
   </section>
 

@@ -36,6 +36,9 @@
           // The bridge gates its review channel; a real app bakes this in at
           // build time, a fixture reads it off the URL.
           token: params.get("token") ?? undefined,
+          // This page's name in the agent's `list_surfaces`, so a review can be
+          // aimed at this window and no other.
+          label: params.get("label") ?? undefined,
         });
       }
     </script>
