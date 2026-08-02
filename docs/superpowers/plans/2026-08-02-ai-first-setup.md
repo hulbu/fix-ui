@@ -1,143 +1,144 @@
-# fix-ui AI-first setup — Implementation Plan
+# fix-ui AI-first setup — Implementation Plan (revision B)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development.
 
-**Goal:** Reduce setup to `npx fix-ui init`, with the agent performing the app integration itself, and make each project's bridge independent so no session is infrastructure for another.
+**Goal:** `npx fix-ui init` is the whole install. The bridge's lifetime belongs to the dev server, so a sink is running exactly when you could be leaving notes. The agent wires the app using **shipped adapters**, never hand-written integration code.
 
-**Architecture:** The bridge becomes per-project on a dynamic port, publishing `{port, token}` to a discovery file that the app reads server-side — so nothing is ever pasted. A second session on the same project proxies to the first. The framework integration moves out of code and into a skill playbook the agent executes.
+**Architecture:** `fixui dev -- <your dev command>` starts the bridge on an OS-assigned port, publishes `.fix-ui.json`, runs your dev command as a child, and tears the bridge down on exit. The MCP server Claude Code spawns is now *always* a proxy that finds the bridge through that file. Injection into the page comes from adapters we ship and test.
 
-**Tech Stack:** Unchanged — TypeScript 5.9 strict ESM, pnpm workspace, vitest 3, Playwright, `@modelcontextprotocol/sdk`.
+**Tech Stack:** Unchanged — TypeScript 5.9 strict ESM, pnpm workspace, vitest 3, Playwright, MCP SDK.
 
 ## Global Constraints
 
-- **Discovery file** `.fix-ui.json` in the project root, mode `0600`, replacing `.fix-ui.token`: `{ "v": 1, "port": <number>, "token": "<string>", "pid": <number> }`. Written before the "listening" log line, removed on graceful shutdown. Gitignored.
-- **Port selection:** `--port` / `FIXUI_PORT` wins; otherwise bind `0` (OS-assigned) and publish the actual port. The fixed 3499 default is **removed** — it is what forced machine-wide sharing.
-- **Proxy is project-scoped, not port-scoped.** On startup: read `.fix-ui.json` in cwd; if present and `/healthz` confirms a live fixui-bridge, become a proxy to *that* port. Otherwise become the daemon. Never probe a hardcoded port.
-- **Stale discovery files are ignored**, not trusted: unreachable or wrong-identity → overwrite and become the daemon.
-- Everything already binding: loopback-only, `Host` check, 256KB body cap, `note` ≤10000 / `selector` ≤2000, token-gated `/events` + verdict + `/surfaces`, one review at a time per project, entries unchanged (capture-format v1).
-- Zero new runtime dependencies. Bridge stays node stdlib + MCP SDK; core/embed stay zero-dep.
+- **Discovery file** `.fix-ui.json`, project root, mode `0600`, replacing `.fix-ui.token`:
+  `{ "v": 1, "port": <number>, "token": "<string>", "pid": <number> }`. Written before the dev command starts; removed on exit. Gitignored.
+- **No fixed port.** `--port`/`FIXUI_PORT` win; otherwise bind `0` and publish the assigned port. The 3499 default is removed.
+- **Two roles, decided by how the process starts:**
+  - `fixui dev` → **owner**: binds, writes discovery, spawns the dev command, cleans up.
+  - spawned by an agent over stdio (`.mcp.json`) → **proxy**: reads `.fix-ui.json`, forwards to the owner. If no live owner, its tools return an explanatory error naming the fix ("start your dev server"), never a silent empty list.
+- **Stale discovery is ignored**, never trusted: unreachable or wrong identity → treat as absent.
+- **Adapters are shipped code, not agent-authored.** The agent selects from a table and inserts one documented line.
+- Everything already binding stays: loopback-only, `Host` check, 256KB cap, `note` ≤10000 / `selector` ≤2000, token-gated `/events` + verdict + `/surfaces`, one review at a time per project, capture-format v1 unchanged.
+- Zero new runtime dependencies.
 - TDD per task; `pnpm -r typecheck && pnpm -r test && pnpm --filter e2e test` green before each commit.
 
 ---
 
-### Task 1: Bridge — dynamic port, discovery file, project-scoped proxy
+### Task 1: Discovery + the two roles
 
-**Files:**
-- Modify: `packages/bridge/src/cli.ts` (port selection, discovery read/write, proxy decision, shutdown cleanup)
-- Create: `packages/bridge/src/discovery.ts`
-- Test: `packages/bridge/src/discovery.test.ts`, extend `packages/bridge/src/cli.test.ts`
+**Files:** create `packages/bridge/src/discovery.ts`, `packages/bridge/src/dev.ts`; modify `cli.ts`; tests `discovery.test.ts`, `dev.test.ts`, extend `cli.test.ts`.
 
-**Interfaces (Produces):**
+**Produces:**
 
 ```ts
 // discovery.ts
 export interface Discovery { v: 1; port: number; token: string; pid: number }
 export const DISCOVERY_FILE = ".fix-ui.json";
-export async function writeDiscovery(projectDir: string, d: Discovery): Promise<void>; // 0600
-export async function readDiscovery(projectDir: string): Promise<Discovery | undefined>; // undefined on missing/malformed
-export async function removeDiscovery(projectDir: string): Promise<void>;
-export async function liveBridge(port: number): Promise<boolean>; // /healthz identity probe
+export async function writeDiscovery(dir: string, d: Discovery): Promise<void>;   // 0600
+export async function readDiscovery(dir: string): Promise<Discovery | undefined>; // undefined if missing/malformed
+export async function removeDiscovery(dir: string): Promise<void>;
+export async function liveBridge(port: number): Promise<boolean>;                 // /healthz identity probe
 ```
 
-Startup order in `cli.ts`: `readDiscovery(cwd)` → if found and `liveBridge(d.port)` → proxy to `d.port` using `d.token`; else bind (explicit port, or 0) → `writeDiscovery` → log → serve. `proxyToken` reads the token from the discovery file instead of `.fix-ui.token`. Remove `TOKEN_FILE` and the 3499 constant.
+`fixui dev -- <cmd...>` (dev.ts): bind port 0 → write discovery → spawn `<cmd>` with stdio inherited → forward SIGINT/SIGTERM to the child → on child exit, remove discovery, stop the bridge, exit with the child's code. The bridge must not outlive the dev command under any exit path.
+
+`cli.ts` when stdin is not a TTY: read discovery; live → proxy; absent/dead → serve MCP whose tools return `"no fix-ui bridge for this project — start your dev server (npm run dev)"`.
 
 - [ ] **Step 1:** Failing tests:
 
 ```ts
-it("writes .fix-ui.json with the bound port at 0600 and removes it on shutdown")
-it("ignores a discovery file whose port answers nothing and becomes the daemon")
-it("ignores a discovery file whose port answers something that is not a fixui-bridge")
-it("becomes a proxy when the discovery file names a live bridge, reusing its token")
-it("an explicit --port still wins over OS assignment")
-it("two bridges in the same project: the second proxies, and list_feedback still works through it")
+it("fixui dev writes .fix-ui.json at 0600 with the bound port, and removes it when the child exits")
+it("fixui dev exits with the child's exit code and leaves no bridge listening")
+it("fixui dev forwards SIGINT to the child and still cleans up")
+it("an agent-spawned bridge proxies to the port named in a live discovery file")
+it("an agent-spawned bridge with no live owner answers tools with an actionable error, not an empty list")
+it("a discovery file whose port answers nothing is treated as absent")
 ```
 
-- [ ] **Step 2:** Verify red. **Step 3:** Implement. **Step 4:** Green + spawn-a-real-bin smoke as `cli.test.ts` already does. **Step 5:** Commit `feat(bridge): per-project discovery file and project-scoped proxy`.
+- [ ] Steps 2–4: red → implement → green (spawn the real bin, as `cli.test.ts` already does). **Step 5:** Commit `feat(bridge): dev-owned lifetime and discovery`.
 
-### Task 2: Embed — a Next entry point that reads discovery server-side
+### Task 2: Shipped adapters
 
-**Files:**
-- Create: `packages/embed/src/next.tsx` (server component), export `./next` from package.json
-- Modify: `packages/embed/src/index.ts` (accept `port` as an alternative to `bridgeUrl`)
-- Test: `packages/embed/src/next.test.tsx`
+**Files:** create `packages/embed/src/next.tsx`, `packages/embed/src/vite.ts`, `packages/embed/src/global.ts`; add a `build` script producing `dist/fixui.global.js` (esbuild IIFE); export `./next`, `./vite` from package.json. Tests alongside.
 
-**Interfaces (Produces):**
+**Produces:**
 
 ```tsx
-// next.tsx — a SERVER component. No "use client".
-export async function FixUiScript(props?: { label?: string; project?: string }): Promise<JSX.Element | null>;
+// next.tsx — SERVER component (no "use client")
+export async function FixUiScript(props?: { label?: string }): Promise<JSX.Element | null>;
 ```
+Returns `null` in production. Otherwise reads `.fix-ui.json` (walking up to the nearest `package.json`) and renders the existing client `<FixUi bridgeUrl token label />`. No discovery file → still renders the picker with no bridge (it queues), and logs one line saying the dev server isn't running under `fixui dev`.
 
-Behavior: returns `null` when `process.env.NODE_ENV === "production"`. Otherwise reads `.fix-ui.json` from `process.cwd()` (walking up to the nearest `package.json` if not found, mirroring the prototype's workspace-root walk), and renders the existing client `<FixUi bridgeUrl={...} token={...} label={...} />`. When no discovery file exists, render `<FixUi />` with no bridge — the picker still mounts and queues, and logs one line saying the bridge is not running.
+```ts
+// vite.ts
+export function fixui(options?: { label?: string }): Plugin;   // apply: "serve" only
+```
+`configureServer` reads discovery; `transformIndexHtml` injects the global script with port and token inlined.
 
-**Why this file exists:** the client component cannot read the filesystem; this is the only place the port and token can be picked up without the developer typing them.
+`global.ts` → `dist/fixui.global.js`: an IIFE that reads `port`/`token`/`label` from its own `<script data-*>` attributes and calls `initFixUi`. This is the plain-HTML adapter.
 
-- [ ] Failing tests: production → null; discovery present → client component receives that port and token; discovery absent → still renders, no throw; walks up to find the file.
-- [ ] Implement, green, commit `feat(embed): Next server entry that discovers the bridge`.
+- [ ] Failing tests: production → null; discovery present → client gets that port/token; discovery absent → renders, no throw; walks up; vite plugin only applies on serve and injects once; global script reads its data attributes.
+- [ ] Commit `feat(embed): Next, Vite and global-script adapters`.
 
-### Task 3: Picker — make a queued note visibly queued
+### Task 3: `fixui init`
 
-**Files:** Modify `packages/core/src/picker.ts`; test in `packages/core/src/picker.test.ts`
+**Files:** create `packages/bridge/src/init.ts` + `init.test.ts`; wire the subcommand.
 
-The failure that bit us in production: notes queued invisibly while the bridge was down, and both human and agent believed they were lost.
+In the target directory, idempotently:
+1. `.claude/skills/fix-ui/` ← SKILL.md + adapters.md
+2. `.mcp.json` ← merge the `fixui` entry, preserving existing servers
+3. `CLAUDE.md` ← append the fix-ui line, never duplicating
+4. `.gitignore` ← `.fix-ui.json`, `.fix-ui.jsonl`, `.fix-ui.reviews.jsonl`
+5. **Detect the stack** and, when confident, make the two edits: wrap the `dev` script as `fixui dev -- <original>`, and insert the matching adapter line. Unsure → print the table and leave it to the agent.
+6. Print what changed and the single next step.
 
-- Chip badge distinguishes queued from saved (e.g. count plus a dot), and the panel shows a queued row differently from a stored one.
-- The saved-notes panel header states it plainly when anything is queued: `"2 waiting for the bridge"`.
-- [ ] Failing tests: a queued `create` marks the entry queued in the panel and the badge; a later successful flush clears the marker.
-- [ ] Implement, green, commit `feat(core): show queued notes as queued`.
+Detection: `next` in dependencies → Next (app router if `app/layout.*` exists, else pages); `vite` in devDependencies → Vite; neither → unknown.
 
-### Task 4: `npx fix-ui init`
+- [ ] Failing tests for each effect, for both detected stacks, for the unknown case, and for idempotence (running twice is a no-op).
+- [ ] Commit `feat(bridge): fix-ui init`.
 
-**Files:**
-- Create: `packages/bridge/src/init.ts`, wire a subcommand in `cli.ts` (`fixui-bridge init` / bin alias)
-- Test: `packages/bridge/src/init.test.ts`
+### Task 4: `set_picker`
 
-Deliberately small — it does **not** touch app code. In the target directory it:
-1. Writes/merges `.mcp.json` with the `fixui` server entry (absolute path to this bin), preserving any existing servers.
-2. Installs the skill to `.claude/skills/fix-ui/` (SKILL.md + integrations.md).
-3. Appends the fix-ui line to `CLAUDE.md`, creating it if absent, and never duplicating on re-run.
-4. Adds `.fix-ui.json`, `.fix-ui.jsonl`, `.fix-ui.reviews.jsonl` to `.gitignore` if not present.
-5. Prints what it did and the one next step: *"Now tell your agent: fix ui"*.
+**Files:** modify `broker.ts`, `server.ts`, `mcp.ts`, `packages/core/src/review-channel.ts`, `picker.ts`; tests alongside.
 
-Idempotent — running twice changes nothing the second time.
+New SSE event `picker` `{ enabled: boolean }`; MCP tool `set_picker({ enabled, surfaceId? })` → arms or disarms picking on one surface, or all of the project's. Unknown surfaceId → the same honest error `request_review` gives.
 
-- [ ] Failing tests for each of the five effects plus idempotence, in a temp dir.
-- [ ] Implement, green, commit `feat(bridge): fix-ui init`.
+- [ ] Failing tests: arming a surface arms only that page; disarm turns it off; unknown surface errors.
+- [ ] Commit `feat: set_picker`.
 
-### Task 5: Skill — the integration playbook
+### Task 5: Skill — the adapter decision table
 
-**Files:** Modify `skills/fix-ui/SKILL.md`; create `skills/fix-ui/integrations.md`
+**Files:** modify `skills/fix-ui/SKILL.md`; create `skills/fix-ui/adapters.md`.
 
-SKILL.md gains a short "First run: wire the picker in" section pointing at `integrations.md`, keeping the loop discipline it already has.
+`adapters.md` is a **selection table**, not a set of recipes for writing code: stack → the adapter to import → the exact line → which file. Plus the `fixui dev` wrapper edit. Plus "not listed → `initFixUi()` in a dev entry."
 
-`integrations.md` carries one recipe per stack — Next app router, Next pages router, Vite, Astro, SvelteKit, Remix, plain HTML/static, and "framework not listed" (mount `initFixUi()` from the app's dev entry). Each recipe states: the exact file to touch, the exact line to add, and the production-safety property of that line.
+SKILL.md gains a short "First run" section: detect, pick from the table, make the two edits, **then load the page and confirm the chip exists**. Reporting the integration done from the edit alone is a red flag, same as resolving an unfixed entry.
 
-**Mandatory verification step in every recipe:** after wiring, load the page and confirm the chip is present — never report the integration done from the edit alone. This is the same rule the skill already enforces for the inbox.
+- [ ] Verify with subagent scenarios against a Next fixture and a Vite fixture: right adapter, right file, verification performed.
+- [ ] Commit `docs(skill): adapter selection table`.
 
-- [ ] Verify with subagent scenarios: give an agent a fixture Next app and the skill; confirm it picks the right recipe, edits the right file, and verifies. Repeat for a Vite fixture and for an unlisted framework.
-- [ ] Commit `docs(skill): framework integration playbook`.
+### Task 6: Demote the extension; docs; e2e
 
-### Task 6: Docs and e2e
+**Files:** `Makefile`, `README.md`, `docs/*`, `e2e/`.
 
-**Files:** `docs/design.md`, `docs/agent-integration.md`, `docs/architecture.html`, `README.md`, `docs/known-gaps.md`, `e2e/`
-
-- Replace every mention of the fixed 3499 default and `.fix-ui.token` with the discovery file and dynamic port.
-- The extension is documented as the path for **sites you do not control**, keeping its manual bridge URL and token config. Note that dynamic ports mean it needs the URL from `.fix-ui.json`.
-- New e2e: two bridges in one project (second proxies, both agents' tools work), and a discovery-file round trip where the page finds the bridge with no configuration.
-- [ ] Commit `docs: per-project bridge, discovery, and the init flow`.
+- The extension leaves the default `make build`; `make build-extension` stays. Its tests keep running so it can't rot silently.
+- README and docs lead with `init` + `fixui dev`; the extension is documented as the path for **sites you do not control**, keeping manual bridge URL + token (dynamic ports mean reading them from `.fix-ui.json`).
+- Replace every mention of port 3499 and `.fix-ui.token`.
+- New e2e: `fixui dev` brings a bridge up and takes it down with the child; a page finds its bridge with no configuration.
+- [ ] Commit `docs: dev-owned bridge, init flow, extension demoted`.
 
 ---
 
 ## What this deletes
 
-The fixed 3499 default, `.fix-ui.token`, the machine-wide daemon assumption, the extension's mandatory options-page configuration for the embed path, and every instance of a developer copying a token by hand.
+The fixed port, `.fix-ui.token`, the machine-wide daemon, the extension's place on the critical path, and every case where a developer copies a token by hand.
 
 ## Deliberately not doing
 
-- **A dev-server sink.** Tempting (notes would never queue), but it duplicates the write path and gives two things that can disagree. Task 3 addresses the real problem — invisible queueing — for far less.
-- **Framework plugins.** The agent does the integration; recipes are prose, so a new framework costs paragraphs rather than a package.
-- **Extension auto-discovery by port scan.** Only worth building if the extension returns to the critical path.
+- **A dev-server sink separate from the bridge** — under `fixui dev` the bridge is up whenever the dev server is, so notes don't queue in practice. A second write path would just be two things that can disagree.
+- **Agent-authored integrations** — adapters are shipped and tested; the agent selects.
+- **Deleting the extension** — demoted, not removed. It is the only answer for sites you do not control.
 
-## Known limitation to document, not solve
+## Known limitation, documented not solved
 
-A static site with no Node dev server has nothing to read `.fix-ui.json`. That case needs an explicit `--port` and an inlined token, or the extension. State it in the recipes; do not engineer around it.
+A static site with no dev server has nothing to run `fixui dev` or read the discovery file. It needs an explicit `--port` with the token inlined into the global script, or the extension.
