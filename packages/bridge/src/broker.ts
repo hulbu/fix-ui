@@ -308,7 +308,7 @@ export function createReviewBroker(): ReviewBroker {
       // — unless that review named a surface, in which case the page in front
       // of us is not the one it was aimed at.
       const review = pending.get(project);
-      if (review?.surfaceId === undefined && review) {
+      if (review !== undefined && review.surfaceId === undefined) {
         deliver(subscriber, "review-requested", requestedPayload(review));
       }
 
