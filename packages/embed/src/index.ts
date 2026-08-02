@@ -34,6 +34,13 @@ export interface FixUiOptions {
    * which is exactly the bridge-less experience, and a fine place to be.
    */
   token?: string;
+  /**
+   * A human name for THIS page on the review channel — "staging", "port 4001".
+   * The agent sees it in `list_surfaces` and can aim a review at exactly this
+   * page (docs/agent-integration.md "Surfaces"). Everything else about the
+   * surface (origin, url, title) the embed reads off the page itself.
+   */
+  label?: string;
   accent?: string;
   chip?: boolean;
   onSaved?: (entry: FeedbackEntry) => void;
@@ -67,7 +74,7 @@ function defaultClipboard(): ((text: string) => Promise<void>) | undefined {
 export function initFixUi(
   options: FixUiOptions = {},
   internals: FixUiInternals = {},
-): Picker & { close(): void } {
+): Picker & { close(): void; readonly surfaceId: string | undefined } {
   let endpoint: string;
   let bridgeUrl: string | undefined;
   if (options.endpoint === undefined) {
@@ -113,6 +120,17 @@ export function initFixUi(
           bridgeUrl,
           project: options.project,
           token: options.token,
+          // What this page is, so an agent can aim a review at it rather than
+          // at every page of the project. Read off the page — the developer
+          // only ever names the `label`.
+          describe: {
+            adapter: "embed",
+            ...(typeof location === "undefined"
+              ? {}
+              : { origin: location.origin, url: location.href }),
+            ...(typeof document === "undefined" ? {} : { title: document.title }),
+            ...(options.label === undefined ? {} : { label: options.label }),
+          },
           picker,
           fetchImpl: internals.fetchImpl,
           eventSourceImpl: EventSourceImpl,
@@ -142,6 +160,12 @@ export function initFixUi(
     // A getter, not a copy: `active` has to track the live picker.
     get active() {
       return picker.active;
+    },
+    /** This page's id on the review channel, once the bridge has assigned one
+     *  — what `request_review({surfaceId})` aims at. Undefined with no review
+     *  channel, or before the stream's first event arrives. */
+    get surfaceId() {
+      return review?.surfaceId;
     },
     close,
   };

@@ -24,4 +24,5 @@ export {
   connectReviewChannel,
   type ReviewChannel,
   type ReviewChannelOptions,
+  type SurfaceDescription,
 } from "./review-channel";

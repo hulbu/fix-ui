@@ -183,9 +183,12 @@ describe("initFixUi", () => {
     const ui = init({ project: "/repo" }, { fetchImpl, eventSourceImpl });
     await settle();
 
-    expect(FakeEventSource.instances.map((source) => source.url)).toEqual([
-      `${DEFAULT_BRIDGE}/events?project=%2Frepo`,
-    ]);
+    // One stream, at the default bridge, routed on this project. (It carries
+    // the page description too — see the surfaces test below.)
+    expect(FakeEventSource.instances).toHaveLength(1);
+    const stream = new URL(FakeEventSource.instances[0]!.url);
+    expect(`${stream.origin}${stream.pathname}`).toBe(`${DEFAULT_BRIDGE}/events`);
+    expect(stream.searchParams.get("project")).toBe("/repo");
 
     await pickAndSave(ui, "make this bigger");
     expect(fetchImpl.posts()[0]).toMatchObject({ url: `${DEFAULT_BRIDGE}/entries` });
@@ -197,7 +200,7 @@ describe("initFixUi", () => {
     const ui = init({ bridgeUrl: "http://127.0.0.1:4000" }, { fetchImpl, eventSourceImpl });
     await settle();
 
-    expect(FakeEventSource.instances[0]?.url).toBe("http://127.0.0.1:4000/events");
+    expect(FakeEventSource.instances[0]?.url).toMatch(/^http:\/\/127\.0\.0\.1:4000\/events\?/);
     await pickAndSave(ui, "make this bigger");
     expect(fetchImpl.posts()[0]?.url).toBe("http://127.0.0.1:4000/entries");
   });
@@ -212,9 +215,9 @@ describe("initFixUi", () => {
     init({ project: "/repo", token: "tok-123" }, { fetchImpl, eventSourceImpl });
     await settle();
 
-    expect(FakeEventSource.instances[0]?.url).toBe(
-      `${DEFAULT_BRIDGE}/events?project=%2Frepo&token=tok-123`,
-    );
+    const gated = new URL(FakeEventSource.instances[0]!.url).searchParams;
+    expect(gated.get("project")).toBe("/repo");
+    expect(gated.get("token")).toBe("tok-123");
 
     FakeEventSource.instances[0]!.emit("review-requested", { reviewId: "rev-1", prompt: "look" });
     humanClick(document.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
@@ -223,6 +226,29 @@ describe("initFixUi", () => {
     expect(fetchImpl.calls.find((call) => call.url.includes("/reviews/"))?.url).toBe(
       `${DEFAULT_BRIDGE}/reviews/rev-1/verdict?token=tok-123`,
     );
+  });
+
+  /**
+   * A surface is one connected page (docs/agent-integration.md "Surfaces").
+   * The embed knows what page it is on, so it says so without being asked;
+   * `label` is the developer's own name for this one — "staging", "port 4001".
+   */
+  it("describes the page it runs on, and exposes the surfaceId the bridge assigns", async () => {
+    const fetchImpl = recordingFetch();
+    const ui = init({ project: "/repo", label: "port 4001" }, { fetchImpl, eventSourceImpl });
+    await settle();
+
+    const query = new URL(FakeEventSource.instances[0]!.url).searchParams;
+    expect(query.get("project")).toBe("/repo");
+    expect(query.get("label")).toBe("port 4001");
+    expect(query.get("origin")).toBe(location.origin);
+    expect(query.get("url")).toBe(location.href);
+    expect(query.get("adapter")).toBe("embed");
+    expect(query.get("title")).toBe(document.title === "" ? null : document.title);
+
+    expect(ui.surfaceId).toBeUndefined();
+    FakeEventSource.instances[0]!.emit("surface", { surfaceId: "surface-9" });
+    expect(ui.surfaceId).toBe("surface-9");
   });
 
   it("is bridge-less with a custom endpoint: posts there and opens no review channel", async () => {
@@ -243,7 +269,7 @@ describe("initFixUi", () => {
     );
     await settle();
 
-    expect(FakeEventSource.instances[0]?.url).toBe(`${DEFAULT_BRIDGE}/events`);
+    expect(FakeEventSource.instances[0]?.url).toMatch(new RegExp(`^${DEFAULT_BRIDGE}/events\\?`));
     await pickAndSave(ui, "make this bigger");
     expect(fetchImpl.posts()[0]?.url).toBe("/api/ui-feedback");
   });
