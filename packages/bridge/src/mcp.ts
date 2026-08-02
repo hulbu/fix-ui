@@ -22,7 +22,13 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { BusyError, DEFAULT_TIMEOUT_SECONDS, type ReviewBroker, type ReviewOutcome } from "./broker.js";
+import {
+  BusyError,
+  DEFAULT_TIMEOUT_SECONDS,
+  type ReviewBroker,
+  type ReviewOutcome,
+  type Surface,
+} from "./broker.js";
 import { listEntries, removeEntry, resolveProject, type JsonRecord } from "./storage.js";
 import { packageVersion } from "./version.js";
 
@@ -36,6 +42,8 @@ export interface ReviewToolInput {
   url?: string;
   timeoutSeconds?: number;
   project?: string;
+  /** One connected page from `list_surfaces`, instead of all of them. */
+  surfaceId?: string;
   /**
    * The SDK's per-call cancellation — aborted when the client sends
    * `notifications/cancelled`, which is what Esc in Claude Code does.
@@ -49,10 +57,13 @@ export interface ReviewToolInput {
   signal?: AbortSignal;
 }
 
-/** What the three tools need, however this process happens to be wired. */
+/** What the tools need, however this process happens to be wired. */
 export interface ReviewTools {
   listFeedback(project?: string): Promise<{ entries: JsonRecord[] }>;
   resolveFeedback(id: string, project?: string): Promise<{ ok: true }>;
+  /** Every connected page, or one project's. Absent project → all of them:
+   *  the page an agent is looking for is often on a project it never named. */
+  listSurfaces(project?: string): Promise<{ surfaces: Surface[] }>;
   /** Resolves only when the review does; throws `BusyError` when busy. */
   requestReview(input: ReviewToolInput): Promise<ReviewOutcome>;
 }
@@ -81,16 +92,44 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "list_surfaces",
+    description:
+      "List the pages currently connected to the bridge — one entry per open page, each with a " +
+      "surfaceId, its project, origin, url, title, label, adapter (embed | extension) and, for " +
+      "the extension, Chrome's windowId/tabId. Call this when more than one page could be the " +
+      "one you mean (two browser windows, the same app on two ports), or when a request_review " +
+      "came back no-reviewer — then pass the surfaceId you picked to request_review. With no " +
+      "project you see every connected page, each naming the project it belongs to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: {
+          type: "string",
+          description: "Only surfaces on this absolute project directory; omit to see them all.",
+        },
+      },
+    },
+  },
+  {
     name: "request_review",
     description:
       "Ask the human to review the running UI: the connected page arms itself, and this call " +
       "returns once they approve or request changes. Verdicts: approved | changes | timeout | " +
-      "no-reviewer (nobody had the page open — ask in the terminal instead).",
+      "no-reviewer (nobody had that page open — call list_surfaces to see what is connected, " +
+      "then aim again, or ask in the terminal instead). Without surfaceId every page of the " +
+      "project is asked; with one, exactly that page is.",
     inputSchema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "What the human should look at." },
         url: { type: "string", description: "Page the reviewer should be on; the page navigates." },
+        surfaceId: {
+          type: "string",
+          description:
+            "One page from list_surfaces, when several could be meant. It must be a surface on " +
+            "this same project (list_surfaces names each one's project) — an unknown, closed or " +
+            "foreign surface answers no-reviewer rather than asking everybody.",
+        },
         timeoutSeconds: {
           type: "number",
           description: `How long to wait for a verdict (default ${DEFAULT_TIMEOUT_SECONDS}).`,
@@ -147,6 +186,9 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
         case "list_feedback":
           return text(await tools.listFeedback(optionalString(args.project, "project")));
 
+        case "list_surfaces":
+          return text(await tools.listSurfaces(optionalString(args.project, "project")));
+
         case "resolve_feedback":
           return text(
             await tools.resolveFeedback(
@@ -169,6 +211,8 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
           }
           const project = optionalString(args.project, "project");
           if (project !== undefined) input.project = project;
+          const surfaceId = optionalString(args.surfaceId, "surfaceId");
+          if (surfaceId !== undefined && surfaceId !== "") input.surfaceId = surfaceId;
           // The client's own cancellation, honored in both modes (see
           // ReviewToolInput.signal).
           if (extra.signal) input.signal = extra.signal;
@@ -292,11 +336,19 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
       // `DELETE /entries/:id` answers — the proxy cannot tell more than that.
       return { ok: true };
     },
+    listSurfaces(project) {
+      // Unscoped on purpose (see ReviewTools.listSurfaces): no project argument
+      // means "everything connected", not "this process's cwd".
+      return Promise.resolve({
+        surfaces: broker.listSurfaces(project === undefined ? undefined : resolve(project)),
+      });
+    },
     requestReview(input) {
       return broker.requestReview({
         project: resolve(input.project),
         prompt: input.prompt,
         ...(input.url === undefined ? {} : { url: input.url }),
+        ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
         timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
         // Esc in the client frees the project and stands the banner down, the
         // same way a dead agent's dropped socket does over HTTP.
@@ -315,8 +367,14 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
  * where the same wait over `node:http` returns fine at 330s), which would kill
  * a review before the daemon's own 600s default could answer it. The daemon
  * owns the clock; this side must not have one.
+ *
+ * `token` is the daemon's review token, needed by the one route a proxy calls
+ * that is gated (`GET /surfaces` — it discloses what the developer has open).
+ * A proxy in another project cannot read the daemon's `.fix-ui.token`, so this
+ * is `FIXUI_TOKEN` or the token file in this process's own cwd (cli.ts), and
+ * absent often enough that the 401 has to explain itself.
  */
-export function httpTools(baseUrl: string, defaultProject: string): ReviewTools {
+export function httpTools(baseUrl: string, defaultProject: string, token?: string): ReviewTools {
   const call = async (
     method: string,
     path: string,
@@ -355,6 +413,25 @@ export function httpTools(baseUrl: string, defaultProject: string): ReviewTools 
       await ok("DELETE", `/entries/${encodeURIComponent(id)}${query(project)}`);
       return { ok: true };
     },
+    async listSurfaces(project) {
+      // Unscoped unless asked, unlike every other tool here: a surface is a
+      // browser page, and the one an agent wants is often filed under the
+      // bridge's own cwd rather than this proxy's project.
+      const params = new URLSearchParams();
+      if (project !== undefined) params.set("project", project);
+      if (token) params.set("token", token);
+      const search = params.toString();
+      const { status, payload } = await call("GET", `/surfaces${search ? `?${search}` : ""}`);
+      if (status === 401) {
+        throw new ToolError(
+          "the bridge daemon refused the surface listing: it is gated by the daemon's review " +
+            "token, which this process does not have. Set FIXUI_TOKEN for both the daemon and " +
+            "this one, or run request_review without a surfaceId.",
+        );
+      }
+      if (status >= 400) throw fail(status, payload);
+      return { surfaces: Array.isArray(payload.surfaces) ? (payload.surfaces as Surface[]) : [] };
+    },
     async requestReview(input) {
       // Dropping this request is how the cancellation reaches the daemon: the
       // held `POST /reviews` watches its own response socket and abandons the
@@ -366,6 +443,7 @@ export function httpTools(baseUrl: string, defaultProject: string): ReviewTools 
         {
           prompt: input.prompt,
           ...(input.url === undefined ? {} : { url: input.url }),
+          ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
           project: input.project ?? defaultProject,
         },

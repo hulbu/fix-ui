@@ -19,7 +19,7 @@
  * and log normally.
  */
 import { randomBytes } from "node:crypto";
-import { unlink, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { httpTools, inProcessTools, serveMcpOverStdio } from "./mcp.js";
 import { createBridgeServer, HOST } from "./server.js";
@@ -80,6 +80,25 @@ function parseToken(env: NodeJS.ProcessEnv): string {
   return randomBytes(24).toString("base64url");
 }
 
+/**
+ * The token a PROXY can honestly get hold of, for the one gated route it calls
+ * (`GET /surfaces`). `FIXUI_TOKEN` when the developer set one for both
+ * processes; otherwise `.fix-ui.token` in this process's own cwd — which is the
+ * daemon's file exactly when the daemon runs in this same project (two sessions
+ * on one repo, the common case). Neither → no token, and `list_surfaces` says
+ * so instead of pretending nothing is connected.
+ */
+async function proxyToken(env: NodeJS.ProcessEnv, cwd: string): Promise<string | undefined> {
+  const configured = env.FIXUI_TOKEN?.trim();
+  if (configured) return configured;
+  try {
+    const stored = (await readFile(path.join(cwd, TOKEN_FILE), "utf8")).trim();
+    return stored === "" ? undefined : stored;
+  } catch {
+    return undefined; // no file, or not ours to read
+  }
+}
+
 async function main(): Promise<void> {
   const port = parsePort(process.argv.slice(2), process.env);
   const project = process.cwd();
@@ -104,7 +123,10 @@ async function main(): Promise<void> {
         ` — serving MCP as a proxy (project ${project})`,
     );
     // Nothing else for a terminal invocation to do; the daemon has the port.
-    if (servesMcp) await serveMcpOverStdio(httpTools(`http://${HOST}:${port}`, project));
+    if (servesMcp) {
+      const shared = await proxyToken(process.env, project);
+      await serveMcpOverStdio(httpTools(`http://${HOST}:${port}`, project, shared));
+    }
     return;
   }
 

@@ -19,7 +19,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, expect, it } from "vitest";
-import { BusyError, createReviewBroker, type ReviewOutcome } from "./broker.js";
+import {
+  BusyError,
+  createReviewBroker,
+  type ReviewBroker,
+  type ReviewOutcome,
+} from "./broker.js";
 import { createMcpServer, httpTools, inProcessTools, type ReviewTools } from "./mcp.js";
 import { createBridgeServer } from "./server.js";
 import { inboxPath } from "./storage.js";
@@ -64,7 +69,11 @@ function sampleEntry(id: string, note: string): Record<string, unknown> {
 
 /** An MCP client over a spawned `fixui-bridge`. stderr is piped so the bridge's
  *  logs stay out of the test output — and so this suite can read them. */
-async function connect(cwd: string, args: string[] = ["--port", "0"]): Promise<{
+async function connect(
+  cwd: string,
+  args: string[] = ["--port", "0"],
+  env: Record<string, string> = {},
+): Promise<{
   client: Client;
   stderr: () => string;
 }> {
@@ -73,6 +82,9 @@ async function connect(cwd: string, args: string[] = ["--port", "0"]): Promise<{
     args: [cliPath, ...args],
     cwd,
     stderr: "pipe",
+    ...(Object.keys(env).length === 0
+      ? {}
+      : { env: { ...(process.env as Record<string, string>), ...env } }),
   });
   let stderr = "";
   const client = new Client({ name: "fixui-mcp-test", version: "0.0.0" });
@@ -123,10 +135,14 @@ async function inboxIds(dir: string): Promise<string[]> {
 }
 
 /** Start a daemon the way a first session does, and read its port off stderr. */
-async function startDaemon(cwd: string): Promise<{ port: number; stdout: () => string }> {
+async function startDaemon(
+  cwd: string,
+  env: Record<string, string> = {},
+): Promise<{ port: number; stdout: () => string }> {
   const child = spawn(process.execPath, [cliPath, "--port", "0"], {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, ...env },
   });
   daemons.push(child);
   let stdout = "";
@@ -150,9 +166,16 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
   const tools = await client.listTools();
   expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
     "list_feedback",
+    "list_surfaces",
     "request_review",
     "resolve_feedback",
   ]);
+  // The workflow has to be in the descriptions: an agent only learns to
+  // enumerate pages from the tool that answered `no-reviewer`.
+  const byName = new Map(tools.tools.map((tool) => [tool.name, tool]));
+  expect(byName.get("request_review")!.description).toContain("list_surfaces");
+  expect(byName.get("request_review")!.inputSchema.properties).toHaveProperty("surfaceId");
+  expect(byName.get("list_surfaces")!.description).toMatch(/no-reviewer/);
   for (const tool of tools.tools) {
     expect(typeof tool.description).toBe("string");
     expect(tool.inputSchema.type).toBe("object");
@@ -253,6 +276,7 @@ async function linked(requestReview: ReviewTools["requestReview"]): Promise<Clie
   return linkedTools({
     listFeedback: () => Promise.resolve({ entries: [] }),
     resolveFeedback: () => Promise.resolve({ ok: true }),
+    listSurfaces: () => Promise.resolve({ surfaces: [] }),
     requestReview,
   });
 }
@@ -377,6 +401,114 @@ it("proxy mode: cancelling request_review drops the held HTTP call, which frees 
   }
 });
 
+// ── Surfaces (docs/agent-integration.md "Surfaces") ─────────────────────────
+
+/** A page on the review channel: the id the bridge handed it, the events it
+ *  saw, and the review it was asked for. */
+function fakeSurface(
+  broker: ReviewBroker,
+  project: string,
+  describe: Record<string, unknown>,
+): { id(): string; events: string[]; reviewId(): string; close(): void } {
+  const events: string[] = [];
+  let id = "";
+  let reviewId = "";
+  const close = broker.subscribe(
+    project,
+    {
+      send: (event, data) => {
+        events.push(event);
+        if (event === "surface") id = String(data.surfaceId);
+        if (event === "review-requested") reviewId = String(data.reviewId);
+      },
+    },
+    describe,
+  );
+  return { id: () => id, events, reviewId: () => reviewId, close };
+}
+
+it("daemon mode: list_surfaces enumerates the connected pages and request_review aims at one", async () => {
+  const dir = await tempProject();
+  const broker = createReviewBroker();
+  const one = fakeSurface(broker, dir, { label: "window one", adapter: "embed" });
+  const two = fakeSurface(broker, dir, { label: "window two", adapter: "embed" });
+  const client = await linkedTools(inProcessTools(broker, dir));
+
+  try {
+    const { surfaces } = await callJson(client, "list_surfaces", {});
+    expect(surfaces.map((surface: any) => surface.label)).toEqual(["window two", "window one"]);
+    expect(surfaces[0]).toMatchObject({ surfaceId: two.id(), project: dir, adapter: "embed" });
+
+    // Scoped, and scoped away.
+    expect((await callJson(client, "list_surfaces", { project: dir })).surfaces).toHaveLength(2);
+    const empty = await tempProject();
+    expect((await callJson(client, "list_surfaces", { project: empty })).surfaces).toEqual([]);
+
+    const call = client.callTool({
+      name: "request_review",
+      arguments: { prompt: "look at window two", surfaceId: two.id(), timeoutSeconds: 5 },
+    });
+    await waitUntil(() => two.events.includes("review-requested"), "the targeted page to be told");
+    expect(one.events).toEqual(["surface"]); // and only the targeted page
+
+    // The page answers with the reviewId it was handed.
+    await broker.submitVerdict(two.reviewId(), "approved", []);
+    expect(JSON.parse(((await call) as any).content[0].text).verdict).toBe("approved");
+
+    // An id nobody is holding is `no-reviewer`, even with two pages connected.
+    expect(await callJson(client, "request_review", { prompt: "?", surfaceId: "gone" })).toEqual({
+      verdict: "no-reviewer",
+      entries: [],
+      durationMs: 0,
+    });
+  } finally {
+    one.close();
+    two.close();
+    broker.stop();
+  }
+});
+
+it("proxy mode: list_surfaces reads the daemon's surfaces over HTTP, with the daemon's token", async () => {
+  const dir = await tempProject();
+  const bridge = createBridgeServer({ port: 0, defaultProject: dir, token: "tok-123" });
+  await bridge.start();
+  const page = fakeSurface(bridge.broker, dir, { label: "the only window", adapter: "extension" });
+  const base = `http://127.0.0.1:${bridge.port}`;
+
+  try {
+    const client = await linkedTools(httpTools(base, dir, "tok-123"));
+    const { surfaces } = await callJson(client, "list_surfaces", {});
+    expect(surfaces).toHaveLength(1);
+    expect(surfaces[0]).toMatchObject({
+      surfaceId: page.id(),
+      project: dir,
+      label: "the only window",
+      adapter: "extension",
+    });
+
+    // The proxy forwards the aim too.
+    const call = client.callTool({
+      name: "request_review",
+      arguments: { prompt: "aimed through the proxy", surfaceId: page.id(), timeoutSeconds: 5 },
+    });
+    await waitUntil(() => page.events.includes("review-requested"), "the page to be told");
+    await bridge.broker.submitVerdict(page.reviewId(), "approved", []);
+    expect(JSON.parse(((await call) as any).content[0].text).verdict).toBe("approved");
+
+    // Without the daemon's token the listing is refused — and says so.
+    const blind = await linkedTools(httpTools(base, dir));
+    const refused = (await blind.callTool({ name: "list_surfaces", arguments: {} })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]!.text).toMatch(/token/i);
+  } finally {
+    page.close();
+    await bridge.stop();
+  }
+});
+
 it("rejects a timeoutSeconds of Infinity, the way the HTTP boundary does", async () => {
   const client = await linked(() =>
     Promise.resolve({ verdict: "approved" as const, entries: [], durationMs: 1 }),
@@ -417,10 +549,16 @@ it("fails a proxied call when the daemon dies mid-response instead of hanging", 
 
 it("proxy mode: a second instance forwards its own project's tools to the running daemon", async () => {
   const daemonDir = await tempProject([sampleEntry("daemon-1", "the daemon's own project")]);
-  const { port, stdout } = await startDaemon(daemonDir);
+  // A shared `FIXUI_TOKEN` is how a proxy gets the review token it cannot read
+  // off the daemon's disk — without it `list_surfaces` is the one tool a proxy
+  // cannot serve (the listing is gated).
+  const token = "shared-token-for-both";
+  const { port, stdout } = await startDaemon(daemonDir, { FIXUI_TOKEN: token });
 
   const proxyDir = await tempProject([sampleEntry("proxy-1", "the proxy's project")]);
-  const { client, stderr } = await connect(proxyDir, ["--port", String(port)]);
+  const { client, stderr } = await connect(proxyDir, ["--port", String(port)], {
+    FIXUI_TOKEN: token,
+  });
 
   // The proxy scopes its calls to its own cwd, not the daemon's.
   const listed = await callJson(client, "list_feedback", {});
@@ -436,6 +574,32 @@ it("proxy mode: a second instance forwards its own project's tools to the runnin
     entries: [],
     durationMs: 0,
   });
+
+  // A page connects to the DAEMON, and the proxy can see it — the surface
+  // listing crosses the process boundary the same way every other tool does.
+  const watcher = new AbortController();
+  const query = new URLSearchParams({
+    project: daemonDir,
+    token,
+    label: "the daemon's window",
+    adapter: "embed",
+  });
+  const stream = await fetch(`http://127.0.0.1:${port}/events?${query.toString()}`, {
+    signal: watcher.signal,
+  });
+  expect(stream.status).toBe(200);
+  try {
+    const { surfaces } = await callJson(client, "list_surfaces", { project: daemonDir });
+    expect(surfaces).toHaveLength(1);
+    expect(surfaces[0]).toMatchObject({
+      project: daemonDir,
+      label: "the daemon's window",
+      adapter: "embed",
+    });
+    expect(typeof surfaces[0].surfaceId).toBe("string");
+  } finally {
+    watcher.abort();
+  }
 
   expect(stderr()).toContain("proxy");
   expect(stdout()).toBe(""); // stdout belongs to the MCP transport in both modes
