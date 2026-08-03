@@ -21,7 +21,7 @@ help:
 	@echo "fix-ui"
 	@echo
 	@echo "  make install          install workspace dependencies (pnpm)"
-	@echo "  make build            build everything: bridge, extension, npm tarballs"
+	@echo "  make build            build everything on the default path: bridge, embed, tarballs"
 	@echo "  make build-bridge     compile the bridge daemon to packages/bridge/dist"
 	@echo "  make build-embed      bundle the embed's global script to packages/embed/dist"
 	@echo "  make build-extension  bundle the Chrome extension into extension/dist"
@@ -42,14 +42,18 @@ install:
 
 # The bridge must be built before the extension: the e2e harness and the
 # extension's own build both assume a compiled daemon is available to test against.
-build: build-bridge build-embed build-extension package
+# The extension is deliberately NOT built here. It is the adapter for sites you
+# do not control, and it is off the default path — `make build-extension` when
+# you want it. Its tests still run in `make test`, so it cannot rot unnoticed.
+build: build-bridge build-embed package
 	@echo
 	@echo "built:"
 	@echo "  bridge     $(BRIDGE)"
-	@echo "  extension  $(EXT)"
-	@echo "             ^ load THIS directory in chrome://extensions, not extension/dist"
+	@echo "  embed      $(REPO)/packages/embed/dist/fixui.global.js"
 	@echo "  tarballs   $(DIST)"
 	@ls -1 $(DIST)/*.tgz 2>/dev/null | sed 's|^|             |'
+	@echo
+	@echo "  (extension not built — it is off the default path: make build-extension)"
 
 build-bridge:
 	pnpm --filter fixui-bridge build
