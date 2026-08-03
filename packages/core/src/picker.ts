@@ -24,48 +24,53 @@ const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel]
 /** Cancelled for non-picker targets while armed — see mechanic 4. */
 const SUPPRESSED = ["pointerdown", "pointerup", "mousedown", "mouseup"];
 const TOAST_MS = 2600;
-/** The chip at rest. */
-const CHIP_IDLE = "#e2e8f0";
 /**
- * The chip's edge, in BOTH states — same white, same 2px, as the badge's own
- * ring (`BADGE_RING`). A light-gray disc (idle) and a run-green disc (live)
- * both need an outline to read as a floating object on an arbitrary host
- * page, and a border that changed with state would make the state change
- * harder to read, not easier — same reasoning as `CHIP_GLYPH`. With a white
- * border the drop shadow is the only thing separating the chip from a white
- * host page, so it is strengthened to carry that alone (see the `box-shadow`
- * on `[${NS}-chip]` below).
+ * The chip's edge, in every state — same white, same 2px, as the badge's own
+ * ring (`BADGE_RING`). The chip needs an outline to read as a floating object
+ * on an arbitrary host page, and with a white border the drop shadow is the
+ * only thing separating it from a white host page, so that shadow is
+ * strengthened to carry the separation alone (`CHIP_SHADOW`).
  */
 const CHIP_BORDER = "#ffffff";
-/** Armed. See `PickerOptions.liveColor`. */
-const LIVE_DEFAULT = "#22c55e";
 /**
- * The chip's glyph, in BOTH states. A foreground that changes with state makes
- * the state change harder to read, not easier — the FILL carries the state, so
- * the mark on top of it stays put. Dark slate clears 7:1 on both fills.
+ * The chip's glyph, in every state. `#0f172a` on the default accent `#ef5b2a`
+ * is 5.3:1 — past AA for the 19px mark it draws.
  */
 const CHIP_GLYPH = "#0f172a";
 /**
- * The note count's disc, and its text. Lighter than the accent so it reads as a
- * count rather than a second alarm, and dark-on-light so the number survives
- * (white on this orange is 2.4:1 — unreadable at 11px).
+ * The note count's disc, and its text. DARK, deliberately: the chip is the
+ * accent orange in every state now (see `paintChip`), and an orange badge on an
+ * orange chip is the bug that started this whole thread. White on `#0f172a` is
+ * 17.9:1 — the count survives at 11px — and the dark disc is 5.3:1 against the
+ * orange it overlaps, on top of the white ring below.
  */
-const BADGE_BG = "#fb923c";
-const BADGE_FG = "#0f172a";
+const BADGE_BG = "#0f172a";
+const BADGE_FG = "#ffffff";
 /**
- * The badge's ring, in BOTH states. Used to be the chip's own fill — but the
- * live chip is `#22c55e` and the badge is `#fb923c`: 1.01:1 luminance apart
- * (near-identical lightness) and orange-on-green is the classic red-green
- * colour-blind collision, so the "ring in the chip's colour" idea was
- * invisible to a real slice of users exactly when it mattered (live). White
- * separates the two discs for everyone, in either state, and — being state-
- * independent — needs no live/idle branch at all.
+ * The badge's ring, in every state. It used to be the chip's own fill; white
+ * separates the two discs for everyone regardless of colour vision, and — being
+ * state-independent — needs no branch at all.
  */
 const BADGE_RING = "#ffffff";
+/**
+ * The chip's resting drop shadow. A constant because the armed-with-reduced-
+ * motion state restates it alongside its ring, and the two must not drift.
+ */
+const CHIP_SHADOW = "0 10px 28px -6px #00000080";
 /** The panel's declared width, and the fallback when nothing is laid out yet. */
 const PANEL_WIDTH = 320;
-/** How much of a dragged panel must stay inside the viewport. */
+/** The chip's declared size, in the same fallback role. */
+const CHIP_SIZE = 44;
+/** How much of a dragged element must stay inside the viewport. */
 const KEEP_VISIBLE = 48;
+/**
+ * Travel (px) before a press on the chip stops being a click. The chip is a
+ * BUTTON and its click is the primary interaction — press-move-release and
+ * press-release are the same three events to the browser, so this number is
+ * the whole of the difference: under it the chip toggles as it always has,
+ * over it the chip moves and the click that follows is swallowed.
+ */
+const CLICK_SLOP = 4;
 
 export interface PickerOptions {
   transport: Transport;
@@ -75,16 +80,8 @@ export interface PickerOptions {
     consoleErrors?: () => ConsoleError[];
     componentName?: (el: Element) => string | undefined;
   };
+  /** The brand colour: the highlight box, the buttons, and the chip's fill. */
   accent?: string;
-  /**
-   * The chip's fill while the picker is armed — a STATE colour, deliberately
-   * not derived from `accent`. Green reads as "live" without being taught, and
-   * it keeps the chip from competing with the accent-coloured highlight box on
-   * the page. Default `#22c55e`: a run-green bright enough that flipping from
-   * the light-gray idle fill is unmistakable at 44px, while still holding
-   * 7.8:1 against the dark glyph.
-   */
-  liveColor?: string;
   /** Show the floating chip. Default true — it is the primary affordance. */
   chip?: boolean;
   /** Wire-only routing hint stamped onto entries. */
@@ -147,10 +144,31 @@ function safeMatches(el: Element, selector: string): boolean {
   }
 }
 
+/**
+ * Has the user asked their machine for less motion?
+ *
+ * The armed chip says "live" by pulsing, and motion is exactly the channel some
+ * people have switched off — at the OS, for reasons ranging from taste to
+ * vestibular illness. A state you can only perceive through motion is a broken
+ * state for them, so this picks which of the two indicators the chip wears
+ * (`paintChip`). Read per paint, never cached: the preference can change under
+ * a running page. Missing (jsdom, older engines) or throwing means "motion is
+ * fine" — the pulse is the default, and it is harmless.
+ */
+function prefersReducedMotion(): boolean {
+  try {
+    return (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function createPicker(opts: PickerOptions): Picker {
   const { transport } = opts;
   const accent = opts.accent ?? "#ef5b2a";
-  const live = opts.liveColor ?? LIVE_DEFAULT;
   const showChip = opts.chip ?? true;
   const componentNameOf = opts.capture?.componentName ?? getReactComponentName;
   const mount: Element | ShadowRoot = opts.mount ?? document.body;
@@ -205,11 +223,14 @@ export function createPicker(opts: PickerOptions): Picker {
       padding:8px 16px;border-radius:999px;font:600 13px system-ui,sans-serif;}
     [${NS}-chip]{position:fixed;inset:auto;margin:0;overflow:visible;
       box-sizing:border-box;z-index:2147483601;right:16px;bottom:16px;
-      width:44px;height:44px;border-radius:999px;cursor:pointer;
+      width:${CHIP_SIZE}px;height:${CHIP_SIZE}px;border-radius:999px;cursor:pointer;
+      touch-action:none;user-select:none;-webkit-user-select:none;
       border:2px solid ${CHIP_BORDER};
-      background:${CHIP_IDLE};color:${CHIP_GLYPH};font-size:19px;
-      box-shadow:0 10px 28px -6px #00000080;}
-    [${NS}-chip][data-on]{background:${live};}
+      background:${accent};color:${CHIP_GLYPH};font-size:19px;
+      box-shadow:${CHIP_SHADOW};}
+    [${NS}-chip][${NS}-dragging]{cursor:grabbing;}
+    [${NS}-chip][${NS}-pulse]{animation:${NS}-pulse 1.8s ease-in-out infinite;}
+    [${NS}-chip][${NS}-static]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
       border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
       font:700 11px/19px system-ui,sans-serif;padding:0 4px;
@@ -219,9 +240,22 @@ export function createPicker(opts: PickerOptions): Picker {
       width:${PANEL_WIDTH}px;max-height:60vh;overflow:auto;background:#fff;color:#1c1c1c;
       border:1px solid #00000022;border-radius:14px;padding:12px;
       box-shadow:0 16px 48px -12px #00000055;font:13px/1.4 system-ui,sans-serif;}
-    [${NS}-panel] h4{margin:0 0 8px;font:700 13px system-ui,sans-serif;}
+    [${NS}-panel] h4{margin:0;flex:1;font:700 13px system-ui,sans-serif;}
+    [${NS}-head]{display:flex;align-items:center;gap:8px;margin:0 0 8px;}
+    [${NS}-panel][${NS}-minimized] [${NS}-head]{margin:0;}
     [${NS}-drag]{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
     [${NS}-panel][${NS}-dragging] [${NS}-drag]{cursor:grabbing;}
+    /* Two columns of dots, three rows — the standard grip, drawn by a repeated
+       radial gradient so it costs no icon, no font and no markup. Muted grey:
+       it is a signal, not a second title. */
+    [${NS}-grip]{flex:none;width:8px;height:12px;
+      background-image:radial-gradient(#94a3b8 1.1px,transparent 1.3px);
+      background-size:4px 4px;background-position:0 0;}
+    [${NS}-min]{flex:none;display:flex;align-items:center;justify-content:center;
+      width:20px;height:20px;padding:0;border:0;border-radius:6px;cursor:pointer;
+      background:transparent;color:#94a3b8;}
+    [${NS}-min]:hover{background:#00000010;color:#1c1c1c;}
+    [${NS}-panel][${NS}-minimized] [${NS}-min] svg{transform:rotate(180deg);}
     [${NS}-row]{display:flex;align-items:flex-start;gap:8px;padding:8px;
       border:1px solid #00000014;border-radius:10px;margin-bottom:6px;}
     [${NS}-row] p{margin:0;flex:1;}
@@ -252,6 +286,22 @@ export function createPicker(opts: PickerOptions): Picker {
       padding:6px 12px;font:600 12px system-ui,sans-serif;white-space:nowrap;}
     [${NS}-approve]{background:${accent};color:#fff;}
     [${NS}-changes]{background:#ffffff26;color:#fff;}
+    /* "Armed" as motion, since the colour no longer moves. Slow and shallow on
+       purpose — this sits on top of somebody's app all day. Transform only:
+       animating width/height would relayout the host page every frame. */
+    @keyframes ${NS}-pulse{
+      0%,100%{transform:scale(1);}
+      50%{transform:scale(1.04);}
+    }
+    /* The same preference the JS reads, honoured by the engine itself for the
+       cases the JS cannot see it (no matchMedia, a preference that flips
+       between paints). Same specificity as the rule above, stated later, so it
+       wins — and it substitutes the static ring rather than leaving the armed
+       chip indistinguishable from the idle one. */
+    @media (prefers-reduced-motion: reduce){
+      [${NS}-chip][${NS}-pulse]{animation:none;
+        box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
+    }
   `;
 
   const styles: HTMLStyleElement[] = [];
@@ -334,8 +384,9 @@ export function createPicker(opts: PickerOptions): Picker {
     for (const el of [box, chip, panel, pop, banner]) place(el);
     // box visibility is inline display — restate it after the move
     if (!active) box.style.display = "none";
-    // …and so is the panel's dragged position, which a re-home must not lose.
-    applyPanelPos();
+    // …and so are the dragged positions, which a re-home must not lose.
+    panelDrag.apply();
+    chipDrag.apply();
   }
 
   // Dialogs toggle the `open` attribute on showModal()/close(); watching it
@@ -371,6 +422,14 @@ export function createPicker(opts: PickerOptions): Picker {
     // Picking active → chip stops picking; otherwise it opens the notes panel.
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
+      // A drag that just ended leaves a click behind — the browser fires one
+      // after any press-and-release on the same element. That click belongs to
+      // the drag, not to the user. Anything under CLICK_SLOP px of travel never
+      // became a drag and arrives here as the click it always was.
+      if (chipDrag.tookTheClick()) {
+        e.preventDefault();
+        return;
+      }
       if (active) disable();
       else togglePanel();
     });
@@ -379,29 +438,31 @@ export function createPicker(opts: PickerOptions): Picker {
   }
 
   /**
-   * The chip's fill — the ONE thing that moves with state. Armed is a STATE, so
-   * it gets a state colour (run-green) rather than the accent, which is already
-   * spoken for by the highlight box on the page. Idle is a light gray: a dark
-   * idle chip and a dark-ish live chip read as the same chip, which is exactly
-   * what users reported ("icon is dark and when clicking it's still dark").
-   */
-  function chipColor(): string {
-    return active ? live : CHIP_IDLE;
-  }
-
-  /**
-   * Repaint the chip and its badge for the current state. The colours are also
-   * in the stylesheet; restating them inline is what survives a page whose own
-   * CSS is hostile (and what a test can read back).
+   * Repaint the chip and its badge for the current state.
+   *
+   * The chip's COLOURS do not move: fill, glyph, border and badge are the same
+   * armed and idle. Colour is IDENTITY here — this is the product's mark on
+   * somebody's page all day, and a mark that changes colour is a different
+   * mark. (Two earlier rounds tried to make the fill carry "armed": the accent
+   * hid the badge sitting on it, and a run-green stopped the chip being the
+   * chip.) What carries the state is MOTION — a slow, shallow pulse — with a
+   * persistent ring standing in for anyone who asked for less of it.
+   *
+   * The colours are also in the stylesheet; restating them inline is what
+   * survives a page whose own CSS is hostile (and what a test can read back).
    */
   function paintChip(): void {
     if (!chip) return;
-    chip.style.backgroundColor = chipColor();
-    // One glyph colour for both fills — see CHIP_GLYPH.
+    chip.style.backgroundColor = accent;
+    // One glyph colour, one border colour — see CHIP_GLYPH and CHIP_BORDER.
     chip.style.color = CHIP_GLYPH;
-    // One border colour for both fills, matching the badge's own ring — see
-    // CHIP_BORDER.
     chip.style.borderColor = CHIP_BORDER;
+    const still = active && prefersReducedMotion();
+    chip.toggleAttribute(`${NS}-pulse`, active && !still);
+    chip.toggleAttribute(`${NS}-static`, still);
+    // The static substitute: an accent ring just outside the white border, so
+    // armed still LOOKS different from idle without anything moving.
+    chip.style.boxShadow = still ? `${CHIP_SHADOW},0 0 0 3px ${accent}` : CHIP_SHADOW;
     const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`);
     // The badge overhangs the chip's edge; a 2px WHITE ring is what separates
     // the two discs at the overlap — in either state, and readable regardless
@@ -446,13 +507,20 @@ export function createPicker(opts: PickerOptions): Picker {
     paintChip();
   }
 
+  /**
+   * Collapsed to its header bar. Kept for the page's lifetime like the dragged
+   * position, and for the same reason: the user put it that way on purpose, and
+   * un-minimizing on every reopen would undo the decision they just made.
+   */
+  let minimized = false;
+
   function togglePanel(): void {
     if (panel) closePanel();
     else openPanel();
   }
 
   function closePanel(): void {
-    stopDrag();
+    panelDrag.stop();
     panel?.remove();
     panel = null;
   }
@@ -463,118 +531,250 @@ export function createPicker(opts: PickerOptions): Picker {
     panel.setAttribute(`${NS}-panel`, "");
     renderPanel();
     place(panel);
-    applyPanelPos(); // where the user last put it, if anywhere
+    panelDrag.apply(); // where the user last put it, if anywhere
     place(chip); // keep the chip clickable above whatever is open
     void hydrate();
   }
 
-  // --- Dragging the panel ---------------------------------------------------
-  /**
-   * Where the user put the panel, in viewport coordinates — kept for the life
-   * of the page. Deliberately in memory: `localStorage` is not something core
-   * may assume exists (a sandboxed iframe throws on merely touching it), and a
-   * panel position is not worth the failure mode.
-   */
-  let panelPos: { left: number; top: number } | null = null;
-  let drag: { pointerId: number; dx: number; dy: number } | null = null;
-
+  // --- Dragging (the panel by its header, the chip by itself) --------------
   function pointerIdOf(e: Event): number {
     return "pointerId" in e && typeof e.pointerId === "number" ? e.pointerId : 0;
   }
 
-  /** Move the panel, but never fully out of reach. */
-  function applyPanelPos(): void {
-    if (!panel || !panelPos) return;
-    const width = panel.getBoundingClientRect().width || PANEL_WIDTH;
-    const left = Math.min(
-      Math.max(panelPos.left, KEEP_VISIBLE - width),
-      window.innerWidth - KEEP_VISIBLE,
-    );
-    // Never above the viewport's top edge: the header is the only handle, and a
-    // header dragged past the top could never be grabbed again.
-    const top = Math.min(Math.max(panelPos.top, 0), window.innerHeight - KEEP_VISIBLE);
-    panelPos = { left, top };
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    // The sheet parks the panel bottom-right; those would fight left/top.
-    panel.style.right = "auto";
-    panel.style.bottom = "auto";
+  interface DragSpec {
+    /** Read live: the panel comes and goes, and both can be re-homed. */
+    el: () => HTMLElement | null;
+    /** Declared width — the fallback when nothing is laid out yet (jsdom). */
+    width: number;
+    /**
+     * Travel before a press becomes a drag. The panel's header is not a
+     * control, so every press there is a drag straight away (0). The chip IS
+     * the primary control, so its press only becomes a drag past `CLICK_SLOP`
+     * — and the click a real drag leaves behind is then answered for once by
+     * `tookTheClick()`.
+     */
+    slop: number;
+    /** A grab that starts on a control is that control's, not the drag's. */
+    guardControls: boolean;
   }
 
-  function onDragStart(e: MouseEvent): void {
-    if (!panel || drag) return;
-    if (e.button > 0) return; // the primary button only — no context menus
-    // The header is the handle, but be explicit: a grab that starts on a
-    // control is that control's, not the drag's.
-    if (e.target instanceof Element && e.target.closest("button")) return;
-    const rect = panel.getBoundingClientRect();
-    const left = panelPos?.left ?? rect.left;
-    const top = panelPos?.top ?? rect.top;
-    drag = { pointerId: pointerIdOf(e), dx: e.clientX - left, dy: e.clientY - top };
-    // No text selection, no native image drag, and the page never learns.
-    e.preventDefault();
-    e.stopPropagation();
-    // Capture keeps a fast drag on the panel even when the pointer outruns it.
-    if (typeof panel.setPointerCapture === "function") {
-      try {
-        panel.setPointerCapture(drag.pointerId);
-      } catch {
-        // unsupported id (a synthesized event) — the window listeners suffice
+  /**
+   * One drag, two draggables. Both park in a corner, on top of whatever the
+   * user was trying to look at, and both must be movable without any of it
+   * leaking into picking or into the page — so the position lives in memory
+   * (`localStorage` is not something core may assume: a sandboxed iframe throws
+   * on merely touching it, and a chip position is not worth that failure mode),
+   * the listeners live on `window` in the capture phase (the same place the
+   * picker's own suppression lives), and every event the gesture touches stops
+   * there.
+   */
+  function draggable(spec: DragSpec) {
+    /** Where the user put it, in viewport coordinates — the page's lifetime. */
+    let pos: { left: number; top: number } | null = null;
+    let drag: {
+      pointerId: number;
+      dx: number;
+      dy: number;
+      fromX: number;
+      fromY: number;
+      moved: boolean;
+    } | null = null;
+    let swallowClick = false;
+
+    /** Move it, but never fully out of reach. */
+    function apply(): void {
+      const el = spec.el();
+      if (!el || !pos) return;
+      const width = el.getBoundingClientRect().width || spec.width;
+      const left = Math.min(
+        Math.max(pos.left, KEEP_VISIBLE - width),
+        window.innerWidth - KEEP_VISIBLE,
+      );
+      // Never above the viewport's top edge: the handle rides the top edge, and
+      // a handle dragged past it could never be grabbed again.
+      const top = Math.min(Math.max(pos.top, 0), window.innerHeight - KEEP_VISIBLE);
+      pos = { left, top };
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      // The sheet parks both in a corner; those would fight left/top.
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    }
+
+    function onStart(e: MouseEvent): void {
+      const el = spec.el();
+      if (!el || drag) return;
+      if (e.button > 0) return; // the primary button only — no context menus
+      if (spec.guardControls && e.target instanceof Element && e.target.closest("button")) return;
+      const rect = el.getBoundingClientRect();
+      drag = {
+        pointerId: pointerIdOf(e),
+        dx: e.clientX - (pos?.left ?? rect.left),
+        dy: e.clientY - (pos?.top ?? rect.top),
+        fromX: e.clientX,
+        fromY: e.clientY,
+        moved: spec.slop === 0,
+      };
+      swallowClick = false;
+      // The page never learns about the gesture either way. What differs is
+      // preventDefault: on the panel it is what stops the browser selecting the
+      // header text, but on the chip it would also cancel the press's own
+      // default behaviours (focus, and on some engines the click itself), so
+      // there it waits until the press has actually become a drag.
+      e.stopPropagation();
+      if (drag.moved) e.preventDefault();
+      // Capture keeps a fast drag on the element even when the pointer outruns it.
+      if (typeof el.setPointerCapture === "function") {
+        try {
+          el.setPointerCapture(drag.pointerId);
+        } catch {
+          // unsupported id (a synthesized event) — the window listeners suffice
+        }
+      }
+      el.setAttribute(`${NS}-dragging`, "");
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onEnd, true);
+      window.addEventListener("pointercancel", onEnd, true);
+    }
+
+    function onMove(e: MouseEvent): void {
+      if (!drag || !spec.el() || pointerIdOf(e) !== drag.pointerId) return;
+      e.stopPropagation();
+      if (!drag.moved) {
+        if (Math.hypot(e.clientX - drag.fromX, e.clientY - drag.fromY) <= spec.slop) return;
+        drag.moved = true;
+        // Past the threshold this is a drag, so the click the browser fires
+        // when the pointer comes up is the drag's to answer for.
+        swallowClick = true;
+      }
+      e.preventDefault();
+      pos = { left: e.clientX - drag.dx, top: e.clientY - drag.dy };
+      apply();
+    }
+
+    function onEnd(e: MouseEvent): void {
+      if (!drag || pointerIdOf(e) !== drag.pointerId) return;
+      e.stopPropagation();
+      stop();
+    }
+
+    function stop(): void {
+      if (!drag) return;
+      const { pointerId } = drag;
+      drag = null;
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onEnd, true);
+      window.removeEventListener("pointercancel", onEnd, true);
+      const el = spec.el();
+      if (el) {
+        el.removeAttribute(`${NS}-dragging`);
+        try {
+          el.releasePointerCapture?.(pointerId);
+        } catch {
+          // never captured — nothing to release
+        }
       }
     }
-    panel.setAttribute(`${NS}-dragging`, "");
-    // Capture phase on window: the same place the picker's own suppression
-    // lives, so a drag over the page cannot reach a page handler either.
-    window.addEventListener("pointermove", onDragMove, true);
-    window.addEventListener("pointerup", onDragEnd, true);
-    window.addEventListener("pointercancel", onDragEnd, true);
+
+    return {
+      apply,
+      stop,
+      onStart: onStart as EventListener,
+      /**
+       * "That click was mine" — asked once, by the chip's click handler, for
+       * the click a finished drag leaves behind. Anything that never crossed
+       * the threshold answers false and is handled as the click it is.
+       */
+      tookTheClick(): boolean {
+        const was = swallowClick;
+        swallowClick = false;
+        return was;
+      },
+    };
   }
 
-  function onDragMove(e: MouseEvent): void {
-    if (!drag || !panel || pointerIdOf(e) !== drag.pointerId) return;
-    e.preventDefault();
-    e.stopPropagation();
-    panelPos = { left: e.clientX - drag.dx, top: e.clientY - drag.dy };
-    applyPanelPos();
-  }
+  const panelDrag = draggable({
+    el: () => panel,
+    width: PANEL_WIDTH,
+    slop: 0,
+    guardControls: true,
+  });
+  /** The chip is its own handle — and its own primary control, hence the slop. */
+  const chipDrag = draggable({
+    el: () => chip,
+    width: CHIP_SIZE,
+    slop: CLICK_SLOP,
+    guardControls: false,
+  });
+  chip?.addEventListener("pointerdown", chipDrag.onStart);
 
-  function onDragEnd(e: MouseEvent): void {
-    if (!drag || pointerIdOf(e) !== drag.pointerId) return;
-    e.stopPropagation();
-    stopDrag();
-  }
-
-  function stopDrag(): void {
-    if (!drag) return;
-    const { pointerId } = drag;
-    drag = null;
-    window.removeEventListener("pointermove", onDragMove, true);
-    window.removeEventListener("pointerup", onDragEnd, true);
-    window.removeEventListener("pointercancel", onDragEnd, true);
-    if (panel) {
-      panel.removeAttribute(`${NS}-dragging`);
-      try {
-        panel.releasePointerCapture?.(pointerId);
-      } catch {
-        // never captured — nothing to release
-      }
-    }
+  /**
+   * A downward chevron, drawn inline: no icon package, no icon font, no emoji.
+   * CSS flips it when the panel is minimized rather than swapping in a second
+   * mark — it is the same control, pointing the other way.
+   */
+  function chevron(): SVGSVGElement {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", "0 0 14 14");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", "M3.5 5.5L7 9l3.5-3.5");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+    return svg;
   }
 
   function renderPanel(): void {
     if (!panel) return;
     panel.textContent = "";
+    panel.toggleAttribute(`${NS}-minimized`, minimized);
 
-    const title = document.createElement("h4");
-    // The header is the drag handle — rows and their buttons stay rows and
-    // buttons, so deleting a note can never turn into a drag. A re-render
+    // The whole header is the drag handle — rows and their buttons stay rows
+    // and buttons, so deleting a note can never turn into a drag. A re-render
     // mid-drag replaces this handle but not the panel, and the drag's own
     // listeners live on `window` and move the panel, so a drag in flight
     // survives it.
-    title.setAttribute(`${NS}-drag`, "");
+    const head = document.createElement("div");
+    head.setAttribute(`${NS}-head`, "");
+    head.setAttribute(`${NS}-drag`, "");
+    head.addEventListener("pointerdown", panelDrag.onStart);
+
+    // Two columns of dots: the header was draggable before this and nothing
+    // said so. Decorative — the header is the target, and a name for the grip
+    // would only be a second, wronger name for the header.
+    const grip = document.createElement("span");
+    grip.setAttribute(`${NS}-grip`, "");
+    grip.setAttribute("aria-hidden", "true");
+
+    const title = document.createElement("h4");
     title.textContent = entries.length > 0 ? `Saved notes (${entries.length})` : "UI notes";
-    title.addEventListener("pointerdown", onDragStart as EventListener);
-    panel.append(title);
+
+    // Not an X. Closing is the scarier promise ("is my note gone?"); what the
+    // user wants when the panel covers the thing they are reviewing is to put
+    // it aside. Minimizing is this panel's display and nothing else's — the
+    // picker, the notes and the chip are all untouched.
+    const minimize = document.createElement("button");
+    minimize.setAttribute(`${NS}-min`, "");
+    minimize.setAttribute("aria-label", minimized ? "Restore notes panel" : "Minimize notes panel");
+    minimize.append(chevron());
+    minimize.addEventListener("click", (e) => {
+      e.stopPropagation();
+      minimized = !minimized;
+      renderPanel();
+      panelDrag.apply(); // a header-height panel must not fall off the clamp
+    });
+
+    head.append(grip, title, minimize);
+    panel.append(head);
+    // Minimized IS the header bar — and it stays wherever it was dragged to.
+    if (minimized) return;
 
     if (entries.length === 0) {
       const empty = document.createElement("p");
@@ -937,7 +1137,8 @@ export function createPicker(opts: PickerOptions): Picker {
     for (const type of SUPPRESSED) window.addEventListener(type, suppress, true);
     document.body.style.cursor = "crosshair";
     chip?.setAttribute("data-on", "");
-    paintChip(); // green: live. The badge keeps its orange and its white ring.
+    // Same orange, now pulsing (or ringed, where motion is unwelcome).
+    paintChip();
     // Re-layer above whatever opened since the chip was first shown.
     place(chip);
     toast("Pick an element, leave a note");
@@ -973,7 +1174,8 @@ export function createPicker(opts: PickerOptions): Picker {
 
   function destroy(): void {
     disable();
-    closePanel(); // also ends any drag in flight and drops its window listeners
+    closePanel(); // also ends the panel drag and drops its window listeners
+    chipDrag.stop(); // …and the chip's, if the page went away mid-gesture
     closeBanner();
     review = null;
     verdictListeners.clear();

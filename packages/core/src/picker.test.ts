@@ -102,13 +102,11 @@ function asRgb(hex: string): string {
 }
 
 const ACCENT = "#ef5b2a";
-/** The default "live" green (`PickerOptions.liveColor`). */
-const LIVE = "#22c55e";
-const CHIP_IDLE = "#e2e8f0";
 /** One glyph colour, both states. */
 const GLYPH = "#0f172a";
-const BADGE_BG = "#fb923c";
-const BADGE_FG = "#0f172a";
+/** The badge is DARK now that the chip is orange in both states. */
+const BADGE_BG = "#0f172a";
+const BADGE_FG = "#ffffff";
 /** The badge's ring — one colour, both states. */
 const RING = "#ffffff";
 /** The chip's own border — same white as the badge's ring, both states. */
@@ -138,6 +136,51 @@ function dragFrom(from: Element, startX: number, startY: number, x: number, y: n
   from.dispatchEvent(pointer("pointermove", x, y));
   from.dispatchEvent(pointer("pointerup", x, y));
   return down;
+}
+
+/**
+ * The same gesture, followed by the `click` the browser fires after a press and
+ * release on the same element — which is the whole difficulty with a draggable
+ * button: the browser cannot tell the two apart, so the picker must.
+ */
+function dragThenClick(
+  from: Element,
+  startX: number,
+  startY: number,
+  x: number,
+  y: number,
+): MouseEvent {
+  dragFrom(from, startX, startY, x, y);
+  const click = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    clientX: x,
+    clientY: y,
+  });
+  from.dispatchEvent(click);
+  return click;
+}
+
+/**
+ * jsdom ships NO `window.matchMedia` at all — `typeof window.matchMedia` is
+ * "undefined" here — so the reduced-motion branch is unreachable without a
+ * stand-in. This is the whole of what the picker reads off it: `matches` for
+ * the one query it asks about. Returns the undo.
+ */
+function stubReducedMotion(reduce: boolean): () => void {
+  const had = "matchMedia" in window;
+  const previous = window.matchMedia;
+  const stub = (query: string): MediaQueryList =>
+    ({
+      matches: reduce && query.includes("prefers-reduced-motion"),
+      media: query,
+    }) as MediaQueryList;
+  Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: stub });
+  return () => {
+    if (had) window.matchMedia = previous;
+    else delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia;
+  };
 }
 
 /** Open the saved-notes panel the way a person does — the chip. */
@@ -538,19 +581,18 @@ describe("createPicker", () => {
 });
 
 /**
- * Two rounds of user reports shaped these colours. First, arming painted the
- * chip in the accent — the same colour as the badge sitting on it, so the note
- * count vanished exactly when the user was most likely to be counting. Then the
- * live colour was a dark green next to a near-black idle chip, and the state
- * change read as no change at all ("icon is dark and when clicking it's still
- * dark"), with the badge's chip-coloured ring showing up as a heavy dark
- * outline. So: the FILL carries STATE (light gray → run-green, far apart in
- * lightness), the glyph never moves, and the badge carries a QUANTITY in one
- * orange with dark text — a quantity that changes colour with state is a
- * quantity nobody can read.
+ * Three rounds of user reports shaped these colours, and the third REVERSED the
+ * second. Arming first painted the chip in the accent — the same colour as the
+ * badge sitting on it, so the note count vanished exactly when the user was
+ * most likely to be counting. The fix made the fill carry the state (gray →
+ * green), which the user then rejected outright: the chip is the product's
+ * mark, and a mark that changes colour is a different mark. So COLOUR IS
+ * IDENTITY — the chip is the accent orange in both states, MOTION carries the
+ * state (see "armed chip motion"), and the badge goes dark-on-white because an
+ * orange badge on an orange chip is the original bug all over again.
  */
 describe("chip state colours", () => {
-  it("arms to the run-green from a light-gray idle — two visibly different fills, neither the accent", async () => {
+  it("stays the accent orange in BOTH states — the fill is identity, not state", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
 
@@ -562,17 +604,25 @@ describe("chip state colours", () => {
     expect(picker.active).toBe(true);
     expect(chip.hasAttribute("data-on")).toBe(true);
     const armed = chip.style.backgroundColor;
-    expect(armed).toBe(asRgb(LIVE));
+    expect(armed).toBe(asRgb(ACCENT));
 
     picker.disable();
     const idle = chip.style.backgroundColor;
-    expect(idle).toBe(asRgb(CHIP_IDLE));
 
-    // The whole point: the two states cannot be the same colour, and neither
-    // may be the accent (which owns the highlight box on the page).
-    expect(armed).not.toBe(idle);
-    expect(armed).not.toBe(asRgb(ACCENT));
-    expect(idle).not.toBe(asRgb(ACCENT));
+    // The reversal, stated: byte-for-byte the same fill, and that fill is the
+    // brand accent — not a state colour, and never green again.
+    expect(idle).toBe(asRgb(ACCENT));
+    expect(armed).toBe(idle);
+    expect(armed).not.toBe(asRgb("#22c55e"));
+  });
+
+  it("follows a custom accent in both states", () => {
+    const picker = make({ transport: fakeTransport(), accent: "#7c3aed" });
+    const chip = query(`[${NS}-chip]`)!;
+
+    expect(chip.style.backgroundColor).toBe(asRgb("#7c3aed"));
+    picker.enable();
+    expect(chip.style.backgroundColor).toBe(asRgb("#7c3aed"));
   });
 
   it("keeps one glyph colour across both states", async () => {
@@ -593,7 +643,7 @@ describe("chip state colours", () => {
     expect(chip.style.color).toBe(armedGlyph);
   });
 
-  it("paints the badge the lighter orange with dark text in BOTH states", async () => {
+  it("paints the badge dark with white text in BOTH states — never orange on an orange chip", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
 
@@ -605,8 +655,11 @@ describe("chip state colours", () => {
     expect(badge().textContent).toBe("1");
     expect(badge().style.backgroundColor).toBe(asRgb(BADGE_BG));
     expect(badge().style.color).toBe(asRgb(BADGE_FG));
-    // Lighter than the accent, and not the accent.
+    // The bug that started this whole thread: an orange badge sitting on an
+    // orange chip. Neither the accent nor the old lighter orange, ever again.
     expect(badge().style.backgroundColor).not.toBe(asRgb(ACCENT));
+    expect(badge().style.backgroundColor).not.toBe(asRgb("#fb923c"));
+    expect(badge().style.backgroundColor).not.toBe(query(`[${NS}-chip]`)!.style.backgroundColor);
 
     picker.disable();
 
@@ -625,17 +678,16 @@ describe("chip state colours", () => {
 
     const ring = (): string => query(`[${NS}-badge]`)!.style.boxShadow;
 
-    // Live: white, not the chip's own green fill (orange-on-green is a
-    // near-1:1 luminance, red-green colour-blind collision).
+    // Live: white, not the chip's own fill — a dark badge ringed in the chip's
+    // orange would smear back into the chip at the overlap.
     expect(ring()).toBe(`0 0 0 2px ${RING}`);
-    expect(ring()).not.toBe(`0 0 0 2px ${LIVE}`);
+    expect(ring()).not.toBe(`0 0 0 2px ${ACCENT}`);
 
     const armedRing = ring();
     picker.disable();
 
     // Idle: same white ring.
     expect(ring()).toBe(`0 0 0 2px ${RING}`);
-    expect(ring()).not.toBe(`0 0 0 2px ${CHIP_IDLE}`);
 
     // The whole point of the change: one ring colour, always — the two
     // states must be byte-for-byte identical.
@@ -651,17 +703,16 @@ describe("chip state colours", () => {
 
     const chip = query(`[${NS}-chip]`)!;
 
-    // Idle: white border.
+    // Idle: white border, not the fill it sits on.
     expect(chip.style.borderColor).toBe(asRgb(CHIP_BORDER));
-    expect(chip.style.borderColor).not.toBe(asRgb(CHIP_IDLE));
+    expect(chip.style.borderColor).not.toBe(asRgb(ACCENT));
 
     picker.enable();
     clickSequence(query("#cta")!);
     await typeAndSave("a note");
 
-    // Live: same white border, not the live fill.
+    // Live: same white border.
     expect(chip.style.borderColor).toBe(asRgb(CHIP_BORDER));
-    expect(chip.style.borderColor).not.toBe(asRgb(LIVE));
 
     const armedBorder = chip.style.borderColor;
     picker.disable();
@@ -671,26 +722,85 @@ describe("chip state colours", () => {
     expect(chip.style.borderColor).toBe(armedBorder);
   });
 
-  it("honours a liveColor override without touching the accent or the badge", async () => {
-    document.body.innerHTML = `<button id="cta">Continue</button>`;
-    const picker = make({ transport: fakeTransport(), accent: ACCENT, liveColor: "#0f766e" });
+});
 
+/**
+ * With the fill pinned to the accent, MOTION is what says "armed" — a slow,
+ * low-amplitude pulse. Motion is also the one channel some people have turned
+ * off at the OS, and a state you can only perceive through motion is a broken
+ * state, so `prefers-reduced-motion: reduce` gets a STATIC substitute (a
+ * persistent outer ring) rather than nothing at all.
+ */
+describe("armed chip motion", () => {
+  it("pulses only while armed, and never animates the box's geometry", () => {
+    const undo = stubReducedMotion(false);
+    try {
+      const picker = make({ transport: fakeTransport(), accent: ACCENT });
+      const chip = query(`[${NS}-chip]`)!;
+
+      expect(chip.hasAttribute(`${NS}-pulse`)).toBe(false);
+
+      picker.enable();
+      expect(chip.hasAttribute(`${NS}-pulse`)).toBe(true);
+      expect(chip.hasAttribute(`${NS}-static`)).toBe(false);
+
+      picker.disable();
+      expect(chip.hasAttribute(`${NS}-pulse`)).toBe(false);
+
+      // The animation itself: slow, infinite, eased, and transform-only —
+      // animating width/height would relayout the host page 60 times a second.
+      const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+      expect(sheet).toContain(`[${NS}-chip][${NS}-pulse]`);
+      expect(sheet).toContain(`animation:${NS}-pulse 1.8s ease-in-out infinite`);
+      const frames = sheet.slice(
+        sheet.indexOf(`@keyframes ${NS}-pulse`),
+        sheet.indexOf("@media (prefers-reduced-motion: reduce)"),
+      );
+      expect(frames).toContain("transform:scale(1.04)");
+      expect(frames).not.toMatch(/(width|height):/);
+    } finally {
+      undo();
+    }
+  });
+
+  it("swaps the pulse for a static ring when the user asked for less motion", () => {
+    const undo = stubReducedMotion(true);
+    try {
+      const picker = make({ transport: fakeTransport(), accent: ACCENT });
+      const chip = query(`[${NS}-chip]`)!;
+      const idleShadow = chip.style.boxShadow;
+
+      picker.enable();
+
+      // No animation — but the state is still perceivable: a persistent ring
+      // in the accent, outside the chip's white border.
+      expect(chip.hasAttribute(`${NS}-pulse`)).toBe(false);
+      expect(chip.hasAttribute(`${NS}-static`)).toBe(true);
+      expect(chip.style.boxShadow).toContain(`0 0 0 3px ${ACCENT}`);
+      expect(chip.style.boxShadow).not.toBe(idleShadow);
+
+      picker.disable();
+      expect(chip.hasAttribute(`${NS}-static`)).toBe(false);
+      expect(chip.style.boxShadow).toBe(idleShadow);
+    } finally {
+      undo();
+    }
+  });
+
+  /** The CSS must honour the preference too, for engines the JS never asks. */
+  it("also disables the animation in the stylesheet under reduced motion", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+    const query_ = sheet.slice(sheet.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(query_).toContain("animation:none");
+  });
+
+  /** No matchMedia at all (jsdom's own default, and old engines) → it pulses. */
+  it("falls back to the pulse where matchMedia does not exist", () => {
+    expect(typeof window.matchMedia).toBe("undefined");
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
     picker.enable();
-    clickSequence(query("#cta")!);
-    await typeAndSave("a note");
-
-    expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb("#0f766e"));
-    expect(query(`[${NS}-chip]`)!.style.color).toBe(asRgb(GLYPH));
-    expect(query(`[${NS}-badge]`)!.style.backgroundColor).toBe(asRgb(BADGE_BG));
-    // The ring is white regardless of liveColor — it never tracked the chip's
-    // fill in the first place.
-    expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe(`0 0 0 2px ${RING}`);
-    // Same for the chip's own border.
-    expect(query(`[${NS}-chip]`)!.style.borderColor).toBe(asRgb(CHIP_BORDER));
-
-    // The override is the ARMED fill only — idle stays the light gray.
-    picker.disable();
-    expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb(CHIP_IDLE));
+    expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
   });
 });
 
@@ -796,5 +906,185 @@ describe("draggable saved-notes panel", () => {
     expect(moved.parentNode).toBe(query("#modal"));
     expect(moved.style.left).toBe("160px");
     expect(moved.style.top).toBe("120px");
+  });
+});
+
+/**
+ * The chip parks bottom-right — where a great many apps keep their own controls
+ * — and it is the one piece of picker UI that is always up. So it moves too,
+ * on the panel's drag machinery. The hard part is that the chip is a BUTTON:
+ * press-move-release and press-release are the same three events to the
+ * browser, and the CLICK is the primary interaction, so a few pixels of travel
+ * has to stay a click and a real drag has to eat the click that follows it.
+ */
+describe("draggable chip", () => {
+  it("moves with a drag past the threshold and swallows the click that follows", async () => {
+    const picker = make({ transport: fakeTransport() });
+    const chip = query(`[${NS}-chip]`)!;
+
+    const click = dragThenClick(chip, 200, 200, 320, 290);
+
+    expect(chip.style.left).toBe("120px");
+    expect(chip.style.top).toBe("90px");
+    // `right`/`bottom` from the sheet would fight `left`/`top`.
+    expect(chip.style.right).toBe("auto");
+    expect(chip.style.bottom).toBe("auto");
+
+    // …and the drag ate the click: no panel, no arming.
+    expect(click.defaultPrevented).toBe(true);
+    await settle();
+    expect(query(`[${NS}-panel]`)).toBeNull();
+    expect(picker.active).toBe(false);
+  });
+
+  it("treats a press that barely travels as a click — picking still toggles", async () => {
+    const picker = make({ transport: fakeTransport() });
+    const chip = query(`[${NS}-chip]`)!;
+
+    // Idle: a 2px wobble still opens the notes panel.
+    const gentle = dragThenClick(chip, 200, 200, 202, 201);
+    await settle();
+    expect(chip.style.left).toBe(""); // under the threshold nothing moved
+    expect(gentle.defaultPrevented).toBe(false);
+    expect(query(`[${NS}-panel]`)).not.toBeNull();
+
+    // Armed: the same wobble still stops picking.
+    picker.enable();
+    dragThenClick(chip, 200, 200, 203, 200);
+    expect(picker.active).toBe(false);
+  });
+
+  it("never picks a page element or reaches a page handler while being dragged", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+    picker.enable();
+
+    const reachedPage: string[] = [];
+    for (const type of ["pointerdown", "pointermove", "pointerup", "mousedown", "click"]) {
+      document.body.addEventListener(type, () => reachedPage.push(type));
+    }
+
+    const chip = query(`[${NS}-chip]`)!;
+    dragThenClick(chip, 300, 300, 420, 380);
+    await settle();
+
+    expect(reachedPage).toEqual([]);
+    expect(query(`[${NS}-pop]`)).toBeNull(); // nothing was picked
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
+    expect(picker.active).toBe(true); // the drag was not a click, so nothing toggled
+    expect(chip.style.left).toBe("120px");
+    expect(chip.style.top).toBe("80px");
+  });
+
+  it("cannot be dragged out of reach in any direction", () => {
+    make({ transport: fakeTransport() });
+    const chip = query(`[${NS}-chip]`)!;
+    const size = 44; // the chip's declared box — jsdom lays nothing out
+
+    dragFrom(chip, 100, 100, -9999, -9999);
+    expect(parseFloat(chip.style.left) + size).toBeGreaterThanOrEqual(48);
+    expect(parseFloat(chip.style.top)).toBeGreaterThanOrEqual(0);
+
+    dragFrom(chip, 0, 0, 9999, 9999);
+    expect(parseFloat(chip.style.left)).toBeLessThanOrEqual(window.innerWidth - 48);
+    expect(parseFloat(chip.style.top)).toBeLessThanOrEqual(window.innerHeight - 48);
+  });
+
+  it("keeps where it was dragged when it re-homes into an open modal dialog", async () => {
+    document.body.innerHTML = `<dialog id="modal">m</dialog>`;
+    make({ transport: fakeTransport() });
+
+    dragFrom(query(`[${NS}-chip]`)!, 100, 100, 260, 220);
+    query("#modal")!.setAttribute("open", "");
+    await settle();
+
+    const moved = query(`[${NS}-chip]`)!;
+    expect(moved.parentNode).toBe(query("#modal"));
+    expect(moved.style.left).toBe("160px");
+    expect(moved.style.top).toBe("120px");
+  });
+});
+
+/**
+ * Two signals the panel was missing: that it can be moved at all (a grip, since
+ * a bare title tells nobody), and a way out that is not a threat. An X reads as
+ * "throw this away"; a chevron reads as "put it aside", which is what the user
+ * actually wants when the panel is over the thing they are reviewing.
+ */
+describe("panel header: grip and minimize", () => {
+  it("puts a dotted grip to the left of the title, drawn in CSS and hidden from AT", async () => {
+    make({ transport: fakeTransport() });
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+    const grip = header.querySelector<HTMLElement>(`[${NS}-grip]`)!;
+    const title = header.querySelector("h4")!;
+
+    expect(grip).not.toBeNull();
+    // Left of the title in the DOM (and in the flex row).
+    expect(grip.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Decorative: the header is the affordance, the grip is only its signal.
+    expect(grip.getAttribute("aria-hidden")).toBe("true");
+    expect(grip.textContent).toBe(""); // no glyph, no emoji, no icon font
+
+    // The dots are CSS — nothing to load, nothing to depend on.
+    const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+    expect(sheet).toContain(`[${NS}-grip]`);
+    expect(sheet).toContain("radial-gradient");
+
+    // And the whole header is still the drag handle.
+    dragFrom(header, 200, 200, 320, 290);
+    expect(panel.style.left).toBe("120px");
+  });
+
+  it("minimizes to the header bar and restores, keeping its dragged position", async () => {
+    const picker = make({ transport: fakeTransport() });
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+    dragFrom(header, 200, 200, 320, 290);
+
+    const minimize = panel.querySelector<HTMLButtonElement>(`[${NS}-min]`)!;
+    expect(minimize).not.toBeNull();
+    expect(minimize.getAttribute("aria-label")).toBe("Minimize notes panel");
+    // A chevron, drawn inline — not an X, and not an icon dependency.
+    expect(minimize.querySelector("svg")).not.toBeNull();
+    expect(minimize.textContent).toBe("");
+
+    minimize.click();
+
+    expect(panel.hasAttribute(`${NS}-minimized`)).toBe(true);
+    expect(panel.querySelector(`[${NS}-pick]`)).toBeNull(); // the body is gone…
+    expect(panel.querySelector(`[${NS}-drag]`)).not.toBeNull(); // …the header is not
+    expect(panel.querySelector(`[${NS}-grip]`)).not.toBeNull();
+    expect(panel.querySelector("h4")).not.toBeNull();
+    // Minimizing is the PANEL's display and nothing else's.
+    expect(picker.active).toBe(false);
+    expect(query(`[${NS}-chip]`)).not.toBeNull();
+    // Still exactly where it was dragged to.
+    expect(panel.style.left).toBe("120px");
+    expect(panel.style.top).toBe("90px");
+
+    const restore = panel.querySelector<HTMLButtonElement>(`[${NS}-min]`)!;
+    expect(restore.getAttribute("aria-label")).toBe("Restore notes panel");
+
+    restore.click();
+
+    expect(panel.hasAttribute(`${NS}-minimized`)).toBe(false);
+    expect(panel.querySelector(`[${NS}-pick]`)).not.toBeNull();
+    expect(panel.style.left).toBe("120px");
+    expect(panel.style.top).toBe("90px");
+
+    // The chevron flips rather than becoming a second icon.
+    const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+    expect(sheet).toContain("rotate(180deg)");
+  });
+
+  it("does not drag the panel when the grab starts on the minimize control", async () => {
+    make({ transport: fakeTransport() });
+    const panel = await openPanel();
+
+    dragFrom(panel.querySelector(`[${NS}-min]`)!, 200, 200, 320, 290);
+
+    expect(panel.style.left).toBe("");
+    expect(panel.style.top).toBe("");
   });
 });
