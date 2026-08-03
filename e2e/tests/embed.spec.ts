@@ -1,4 +1,4 @@
-import { armPicker, expect, openFixture, pickAndNote, test } from "../helpers/fixui";
+import { armPicker, CHIP, expect, openFixture, pickAndNote, test } from "../helpers/fixui";
 
 /**
  * The npm embed against a real bridge, in a real browser: one pick becomes one
@@ -42,4 +42,51 @@ test("a picked element becomes one v1 entry in the project inbox", async ({
   expect(consoleErrors.map((error) => error.message)).toContain(
     "PricingCard: failed to load pricing data",
   );
+});
+
+/**
+ * The cascade, which no unit test can prove.
+ *
+ * The crosshair used to be a cursor on `<body>`, and CSS resolves the cursor
+ * from the element UNDER the pointer — so `#save-btn`, which declares
+ * `cursor:pointer` like every button on the fixture, showed a hand while
+ * picking was armed. The affordance vanished exactly where the user was most
+ * likely to be aiming. jsdom does not resolve the cascade at all, so only a
+ * real browser can say who won: `getComputedStyle` here is the whole point of
+ * this spec.
+ */
+test("the crosshair beats the page's own cursor while picking", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
+  await openFixture(page, baseURL!, "basic.html", bridge);
+
+  const cursorOf = (selector: string, pseudo?: string): Promise<string> =>
+    page.locator(selector).evaluate(
+      (el, arg) => getComputedStyle(el, arg ?? null).cursor,
+      pseudo,
+    );
+
+  // The page's own claim, before anybody arms anything.
+  expect(await cursorOf("#save-btn")).toBe("pointer");
+
+  await armPicker(page);
+  await page.locator("#save-btn").hover();
+
+  // …overruled, on the element and on its pseudo-elements (a ::before overlay
+  // with its own cursor would otherwise punch through).
+  expect(await cursorOf("#save-btn")).toBe("crosshair");
+  expect(await cursorOf("#save-btn", "::before")).toBe("crosshair");
+  // …and everything else on the page with it, not just what is hovered.
+  expect(await cursorOf("body")).toBe("crosshair");
+
+  // The picker's own UI is exempt, or it would be unusable while armed: the
+  // chip is still a button.
+  expect(await cursorOf(CHIP)).toBe("pointer");
+
+  // Disarmed, the page gets its cursors back — nothing of ours is left over.
+  await page.keyboard.press("Escape");
+  await expect.poll(() => cursorOf("#save-btn")).toBe("pointer");
+  await expect.poll(() => cursorOf("body")).toBe("auto");
 });

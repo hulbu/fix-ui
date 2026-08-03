@@ -208,7 +208,7 @@ async function typeAndSave(note: string): Promise<void> {
 afterEach(() => {
   while (live.length > 0) live.pop()!.destroy();
   document.body.innerHTML = "";
-  document.body.style.cursor = "";
+  document.documentElement.removeAttribute(`${NS}-armed`);
 });
 
 describe("createPicker", () => {
@@ -321,7 +321,9 @@ describe("createPicker", () => {
     expect(document.querySelectorAll(UI).length).toBe(0);
     expect(document.head.querySelectorAll(`style[${NS}]`).length).toBe(0);
     expect(picker.active).toBe(false);
-    expect(document.body.style.cursor).toBe("");
+    // The armed marker is the crosshair's only switch now — with the sheet gone
+    // and the attribute off, nothing about the page's cursor is still ours.
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
 
     const cta = query("#cta")!;
     const reachedPage: string[] = [];
@@ -1135,5 +1137,155 @@ describe("panel header: grip and minimize", () => {
 
     expect(panel.style.left).toBe("");
     expect(panel.style.top).toBe("");
+  });
+});
+
+/**
+ * The crosshair is the whole of the picking affordance, and it used to be set
+ * on `document.body` — where CSS resolves the cursor from the element UNDER the
+ * pointer, so every button, link and input on the page (each declaring its own
+ * `cursor`) beat it. The affordance disappeared exactly where the user was most
+ * likely to be aiming.
+ *
+ * ⚠ jsdom does not resolve the cascade: `getComputedStyle(button).cursor` here
+ * says nothing about who wins. What a unit test can honestly assert is the
+ * MECHANISM — the armed attribute, the scope of the rules, and their declared
+ * cursors and importance. That the cascade then behaves is the e2e's job
+ * (`e2e/tests/embed.spec.ts`, "the crosshair beats the page's own cursor").
+ */
+describe("the crosshair while armed", () => {
+  /** The picker's stylesheet, as text — one copy per root it styles. */
+  function sheetIn(root: ParentNode): string {
+    return root.querySelector(`style[${NS}]`)!.textContent!;
+  }
+
+  /** Every cursor declaration in a sheet, in source order. */
+  function cursorRules(text: string): { selectors: string[]; cursor: string }[] {
+    return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .map(([, selectors, body]) => ({
+        selectors: selectors!.split(",").map((s) => s.trim().replace(/\s+/g, " ")),
+        cursor: /cursor:([^;]+)/.exec(body!)?.[1]?.trim() ?? "",
+      }))
+      .filter((rule) => rule.cursor !== "");
+  }
+
+  /**
+   * What the armed sheet declares for `selector`. The LAST such rule: equal
+   * specificity is broken by source order, which is how the picker's own
+   * controls beat the blanket rule they tie with.
+   */
+  function armedCursor(selector: string, root: ParentNode = document.head): string | undefined {
+    const scoped = `html[${NS}-armed] ${selector}`;
+    return cursorRules(sheetIn(root))
+      .filter((rule) => rule.selectors.includes(scoped))
+      .pop()?.cursor;
+  }
+
+  it("forces the crosshair onto every element and pseudo-element while armed, and only while armed", () => {
+    document.body.innerHTML = `<button id="cta" style="cursor:pointer">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+    const cta = query("#cta")!;
+    const blanket = `html[${NS}-armed] *`;
+
+    // Idle: the page is untouched, and nothing in the sheet applies.
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+    expect(cta.matches(blanket)).toBe(false);
+
+    picker.enable();
+
+    // Armed is a fact about the DOCUMENT — the one thing a rule can be scoped
+    // to, and the one thing the page's own `cursor:pointer` cannot outrank
+    // once the rule carries `!important`.
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(true);
+    expect(cta.matches(blanket)).toBe(true);
+
+    // `!important` is deliberate here: the picker is overriding arbitrary
+    // author CSS it does not control, for the duration of a gesture.
+    expect(armedCursor("*")).toBe("crosshair!important");
+    // A ::before overlay with its own cursor would otherwise punch through.
+    expect(armedCursor("*::before")).toBe("crosshair!important");
+    expect(armedCursor("*::after")).toBe("crosshair!important");
+
+    picker.disable();
+
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+    expect(cta.matches(blanket)).toBe(false);
+  });
+
+  it("keeps the picker's own controls usable, with the cursor each one promises", async () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.enable();
+
+    // The chip is a BUTTON first — a click toggles picking — and only a drag
+    // past CLICK_SLOP second, so it promises `pointer`, not `grab`.
+    expect(armedCursor(`[${NS}-chip]`)).toBe("pointer!important");
+    expect(armedCursor(`[${NS}-chip] *`)).toBe("pointer!important");
+    expect(armedCursor(`[${NS}-chip][${NS}-dragging]`)).toBe("grabbing!important");
+
+    // The panel's header IS the handle; the grip inside it is only its signal.
+    expect(armedCursor(`[${NS}-drag]`)).toBe("grab!important");
+    expect(armedCursor(`[${NS}-drag] *`)).toBe("grab!important");
+    expect(armedCursor(`[${NS}-panel][${NS}-dragging] [${NS}-drag]`)).toBe("grabbing!important");
+
+    // Every button the picker draws.
+    expect(armedCursor(`[${NS}-panel] button`)).toBe("pointer!important");
+    expect(armedCursor(`[${NS}-pop] button`)).toBe("pointer!important");
+    expect(armedCursor(`[${NS}-banner] button`)).toBe("pointer!important");
+    // …except the one that cannot be pressed: an empty note is not a note.
+    expect(armedCursor(`[${NS}-pop] button[disabled]`)).toBe("default!important");
+
+    // The note field is text, and typing in it is the point.
+    expect(armedCursor(`[${NS}-pop] textarea`)).toBe("text!important");
+
+    // The picker's surfaces are not pick targets: no crosshair on them.
+    for (const surface of [`[${NS}-panel]`, `[${NS}-pop]`, `[${NS}-banner]`, `[${NS}-toast]`]) {
+      expect(armedCursor(surface)).toBe("default!important");
+    }
+  });
+
+  it("takes the attribute back on disable(), and leaves no trace at all on destroy()", () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+
+    picker.enable();
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(true);
+
+    picker.destroy();
+    live.pop();
+
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+    // The rule goes with the sheet — nothing left behind to apply to anything.
+    expect(document.head.querySelectorAll(`style[${NS}]`).length).toBe(0);
+    expect(document.querySelectorAll(`style[${NS}]`).length).toBe(0);
+  });
+
+  it("cannot reach into a shadow-root mount — whose UI keeps its own cursors", () => {
+    document.body.innerHTML = `<button id="cta">Continue</button><div id="host"></div>`;
+    const host = query("#host")!;
+    const root = host.attachShadow({ mode: "closed" });
+    const picker = make({ transport: fakeTransport(), mount: root });
+
+    picker.enable();
+
+    // Every crosshair rule is scoped to the document element. A shadow tree has
+    // no `html` ancestor, so none of them can match inside it — which is why
+    // the shadow-hosted UI is safe even though the head copy is blind to it.
+    for (const rule of cursorRules(sheetIn(root)).filter((r) => r.cursor.startsWith("crosshair"))) {
+      for (const selector of rule.selectors) expect(selector).toContain(`html[${NS}-armed]`);
+    }
+    const chip = root.querySelector<HTMLElement>(`[${NS}-chip]`)!;
+    expect(chip.matches(`html[${NS}-armed] *`)).toBe(false);
+    // …and the shadow copy carries the picker's own cursors, so the UI in there
+    // is styled by its own sheet and nothing else.
+    expect(armedCursor(`[${NS}-chip]`, root)).toBe("pointer!important");
+
+    // The HOST is in the page's DOM and does match `*` — harmless: it is a
+    // zero-size anchor, and the cursor resolves from the innermost element
+    // under the pointer, which is always a shadow child with its own rule.
+    expect(host.matches(`html[${NS}-armed] *`)).toBe(true);
+
+    picker.destroy();
+    live.pop();
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
   });
 });

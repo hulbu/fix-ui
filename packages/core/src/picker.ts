@@ -21,6 +21,8 @@ import type { Transport } from "./transport";
 
 const NS = "data-uifb";
 const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel],[${NS}-banner]`;
+/** On `<html>` exactly while picking is armed — the crosshair's only switch. */
+const ARMED = `${NS}-armed`;
 /** Cancelled for non-picker targets while armed — see mechanic 4. */
 const SUPPRESSED = ["pointerdown", "pointerup", "mousedown", "mouseup"];
 const TOAST_MS = 2600;
@@ -71,6 +73,67 @@ const KEEP_VISIBLE = 48;
  * over it the chip moves and the click that follows is swallowed.
  */
 const CLICK_SLOP = 4;
+
+/** Each selector in a comma list, plus everything inside it. */
+function withDescendants(selectors: string): string {
+  return selectors
+    .split(",")
+    .flatMap((selector) => [selector.trim(), `${selector.trim()} *`])
+    .join(",");
+}
+
+/** Each selector in a comma list, scoped to the armed document. */
+function whileArmed(selectors: string): string {
+  return selectors
+    .split(",")
+    .map((selector) => `html[${ARMED}] ${selector.trim()}`)
+    .join(",");
+}
+
+/**
+ * The crosshair, and who is allowed to escape it.
+ *
+ * The cursor resolves from the element UNDER the pointer, not from an ancestor
+ * — so a cursor on `<body>` is beaten by every button, link and input on the
+ * page, each declaring its own. That is the affordance disappearing exactly
+ * where the user is most likely to be aiming, so while armed the crosshair is
+ * forced onto EVERYTHING, pseudo-elements included (a `::before` overlay with
+ * its own cursor would otherwise punch through).
+ *
+ * `!important` is the point rather than a shortcut: this deliberately overrides
+ * arbitrary author CSS the picker does not control, for the duration of a
+ * gesture, and nothing weaker can outrank a page's own `!important`.
+ *
+ * The whole thing hangs off one attribute on `<html>`, so it applies only while
+ * picking and stops the instant the attribute comes off — no rule left in the
+ * sheet applying unconditionally, and nothing to unwind but the attribute.
+ *
+ * The exceptions are the picker's own UI, which the blanket rule would
+ * otherwise make unusable — a crosshair over the Save button says "this is a
+ * pick target", and it is not. Each exception is two compound selectors deep
+ * against the blanket rule's one, so it wins on specificity, and restates
+ * `!important` so it cannot lose to it either. Order matters where specificity
+ * ties (the surfaces vs. the handles inside them): later wins.
+ *
+ * A shadow-root mount is untouched by all of this — a shadow tree has no `html`
+ * ancestor, so none of these selectors can match inside one. That copy of the
+ * sheet keeps the plain cursors declared above.
+ */
+const CURSOR_CSS = ((): string => {
+  /** The chip is a BUTTON first (a click toggles picking) and a draggable second. */
+  const buttons = `[${NS}-chip],[${NS}-panel] button,[${NS}-pop] button,[${NS}-banner] button`;
+  /** Mid-gesture, on either draggable. */
+  const grabbing = `[${NS}-chip][${NS}-dragging],[${NS}-panel][${NS}-dragging] [${NS}-drag]`;
+  return `
+    ${whileArmed("*,*::before,*::after")},html[${ARMED}]{cursor:crosshair!important;}
+    ${whileArmed(withDescendants(OWN_UI))}{cursor:default!important;}
+    ${whileArmed(withDescendants(`[${NS}-drag]`))}{cursor:grab!important;}
+    ${whileArmed(withDescendants(buttons))}{cursor:pointer!important;}
+    ${whileArmed(withDescendants(grabbing))}{cursor:grabbing!important;}
+    ${whileArmed(`[${NS}-pop] button[disabled]`)}{cursor:default!important;}
+    ${whileArmed(`[${NS}-pop] textarea`)}{cursor:text!important;}
+`;
+})();
 
 export interface PickerOptions {
   transport: Transport;
@@ -306,7 +369,7 @@ export function createPicker(opts: PickerOptions): Picker {
       [${NS}-chip][${NS}-pulse]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
       [${NS}-chip][${NS}-pulse] [${NS}-glyph]{animation:none;}
     }
-  `;
+${CURSOR_CSS}  `;
 
   const styles: HTMLStyleElement[] = [];
   function addStyle(root: Node): void {
@@ -1146,7 +1209,9 @@ export function createPicker(opts: PickerOptions): Picker {
     window.addEventListener("click", onClick, true);
     window.addEventListener("keydown", onKey, true);
     for (const type of SUPPRESSED) window.addEventListener(type, suppress, true);
-    document.body.style.cursor = "crosshair";
+    // The whole cursor story, in one attribute — see CURSOR_CSS. Not a cursor
+    // on <body>: that one is beaten by every element that declares its own.
+    document.documentElement.setAttribute(ARMED, "");
     chip?.setAttribute("data-on", "");
     // Same orange, now pulsing (or ringed, where motion is unwelcome).
     paintChip();
@@ -1162,7 +1227,7 @@ export function createPicker(opts: PickerOptions): Picker {
     window.removeEventListener("click", onClick, true);
     window.removeEventListener("keydown", onKey, true);
     for (const type of SUPPRESSED) window.removeEventListener(type, suppress, true);
-    document.body.style.cursor = "";
+    document.documentElement.removeAttribute(ARMED);
     box.style.display = "none";
     demote(box);
     chip?.removeAttribute("data-on");
@@ -1185,6 +1250,9 @@ export function createPicker(opts: PickerOptions): Picker {
 
   function destroy(): void {
     disable();
+    // Belt and braces: `disable()` is a no-op when the picker was never armed,
+    // and destroy() must leave nothing of ours on the document either way.
+    document.documentElement.removeAttribute(ARMED);
     closePanel(); // also ends the panel drag and drops its window listeners
     chipDrag.stop(); // …and the chip's, if the page went away mid-gesture
     closeBanner();

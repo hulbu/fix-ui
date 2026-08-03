@@ -91,10 +91,14 @@ async function toggleOn(sw: Worker, pageUrl: string): Promise<string> {
   }, pageUrl);
 }
 
-/** The picker sets `crosshair` while armed and clears it when it stops — the
- *  only state a CLOSED shadow root leaves visible to the page (and to us). */
+/**
+ * The picker forces `crosshair` onto the page while armed and takes it back
+ * when it stops — the only state a CLOSED shadow root leaves visible to the
+ * page (and to us). Computed, not inline: the crosshair is a rule now, gated by
+ * an attribute on `<html>`, precisely so the page's own cursors cannot beat it.
+ */
 function cursor(page: Page): Promise<string> {
-  return page.evaluate(() => document.body.style.cursor);
+  return page.evaluate(() => getComputedStyle(document.body).cursor);
 }
 
 test("the extension picks a React element on a page it knows nothing about", async ({
@@ -162,7 +166,7 @@ test("the extension picks a React element on a page it knows nothing about", asy
       y: document.documentElement.clientHeight - 38,
     }));
     await page.mouse.click(at.x, at.y);
-    await expect.poll(() => cursor(page)).toBe("");
+    await expect.poll(() => cursor(page)).toBe("auto");
 
     // Picking is off: the page reacts to its own clicks again.
     await page.click("#count-btn");
