@@ -24,7 +24,7 @@ const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel]
 /** Cancelled for non-picker targets while armed — see mechanic 4. */
 const SUPPRESSED = ["pointerdown", "pointerup", "mousedown", "mouseup"];
 const TOAST_MS = 2600;
-/** The chip at rest, and the ring the badge wears while the chip is at rest. */
+/** The chip at rest. */
 const CHIP_IDLE = "#e2e8f0";
 /**
  * The idle chip's edge. A light-gray disc on a white page is a disc nobody can
@@ -46,6 +46,16 @@ const CHIP_GLYPH = "#0f172a";
  */
 const BADGE_BG = "#fb923c";
 const BADGE_FG = "#0f172a";
+/**
+ * The badge's ring, in BOTH states. Used to be the chip's own fill — but the
+ * live chip is `#22c55e` and the badge is `#fb923c`: 1.01:1 luminance apart
+ * (near-identical lightness) and orange-on-green is the classic red-green
+ * colour-blind collision, so the "ring in the chip's colour" idea was
+ * invisible to a real slice of users exactly when it mattered (live). White
+ * separates the two discs for everyone, in either state, and — being state-
+ * independent — needs no live/idle branch at all.
+ */
+const BADGE_RING = "#ffffff";
 /** The panel's declared width, and the fallback when nothing is laid out yet. */
 const PANEL_WIDTH = 320;
 /** How much of a dragged panel must stay inside the viewport. */
@@ -197,8 +207,7 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
       border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
       font:700 11px/19px system-ui,sans-serif;padding:0 4px;
-      box-shadow:0 0 0 2px ${CHIP_IDLE};}
-    [${NS}-chip][data-on] [${NS}-badge]{box-shadow:0 0 0 2px ${live};}
+      box-shadow:0 0 0 2px ${BADGE_RING};}
     [${NS}-panel]{position:fixed;inset:auto;margin:0;z-index:2147483601;
       right:16px;bottom:70px;
       width:${PANEL_WIDTH}px;max-height:60vh;overflow:auto;background:#fff;color:#1c1c1c;
@@ -376,9 +385,8 @@ export function createPicker(opts: PickerOptions): Picker {
 
   /**
    * Repaint the chip and its badge for the current state. The colours are also
-   * in the stylesheet; restating them inline is what makes the badge's ring
-   * follow the chip in a page whose own CSS is hostile (and what a test can
-   * read back).
+   * in the stylesheet; restating them inline is what survives a page whose own
+   * CSS is hostile (and what a test can read back).
    */
   function paintChip(): void {
     if (!chip) return;
@@ -389,9 +397,10 @@ export function createPicker(opts: PickerOptions): Picker {
     // own edge, and a gray hairline on green would just read as a seam.
     chip.style.borderColor = active ? live : CHIP_IDLE_BORDER;
     const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`);
-    // The badge overhangs the chip's edge; a 2px ring in the CHIP's colour is
-    // what separates the two discs at the overlap, in either state.
-    if (badge) badge.style.boxShadow = `0 0 0 2px ${chipColor()}`;
+    // The badge overhangs the chip's edge; a 2px WHITE ring is what separates
+    // the two discs at the overlap — in either state, and readable regardless
+    // of colour vision. See BADGE_RING.
+    if (badge) badge.style.boxShadow = `0 0 0 2px ${BADGE_RING}`;
   }
 
   /**
@@ -922,7 +931,7 @@ export function createPicker(opts: PickerOptions): Picker {
     for (const type of SUPPRESSED) window.addEventListener(type, suppress, true);
     document.body.style.cursor = "crosshair";
     chip?.setAttribute("data-on", "");
-    paintChip(); // green: live. The badge keeps its orange and its ring follows.
+    paintChip(); // green: live. The badge keeps its orange and its white ring.
     // Re-layer above whatever opened since the chip was first shown.
     place(chip);
     toast("Pick an element, leave a note");

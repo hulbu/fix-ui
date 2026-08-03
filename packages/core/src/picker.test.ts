@@ -109,6 +109,8 @@ const CHIP_IDLE = "#e2e8f0";
 const GLYPH = "#0f172a";
 const BADGE_BG = "#fb923c";
 const BADGE_FG = "#0f172a";
+/** The badge's ring — one colour, both states. */
+const RING = "#ffffff";
 
 /**
  * A pointer event. jsdom has no `PointerEvent` constructor and no
@@ -611,7 +613,7 @@ describe("chip state colours", () => {
     expect(badge().style.color).toBe(asRgb(BADGE_FG));
   });
 
-  it("rings the badge in the chip's own current background, in both states", async () => {
+  it("rings the badge in white, identically in both states", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
 
@@ -619,22 +621,26 @@ describe("chip state colours", () => {
     clickSequence(query("#cta")!);
     await typeAndSave("a note");
 
-    const chip = query(`[${NS}-chip]`)!;
     const ring = (): string => query(`[${NS}-badge]`)!.style.boxShadow;
-    /** The ring's colour, in the same units the chip reports its fill in. */
-    const ringColor = (): string => asRgb(ring().replace("0 0 0 2px ", ""));
 
-    expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
-    expect(ringColor()).toBe(chip.style.backgroundColor);
+    // Live: white, not the chip's own green fill (orange-on-green is a
+    // near-1:1 luminance, red-green colour-blind collision).
+    expect(ring()).toBe(`0 0 0 2px ${RING}`);
+    expect(ring()).not.toBe(`0 0 0 2px ${LIVE}`);
 
+    const armedRing = ring();
     picker.disable();
-    expect(ring()).toBe(`0 0 0 2px ${CHIP_IDLE}`);
-    expect(ringColor()).toBe(chip.style.backgroundColor);
-    // No more heavy dark outline around the count.
-    expect(ringColor()).not.toBe(asRgb("#1c1c1c"));
+
+    // Idle: same white ring.
+    expect(ring()).toBe(`0 0 0 2px ${RING}`);
+    expect(ring()).not.toBe(`0 0 0 2px ${CHIP_IDLE}`);
+
+    // The whole point of the change: one ring colour, always — the two
+    // states must be byte-for-byte identical.
+    expect(ring()).toBe(armedRing);
 
     picker.enable();
-    expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
+    expect(ring()).toBe(`0 0 0 2px ${RING}`);
   });
 
   it("honours a liveColor override without touching the accent or the badge", async () => {
@@ -648,7 +654,9 @@ describe("chip state colours", () => {
     expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb("#0f766e"));
     expect(query(`[${NS}-chip]`)!.style.color).toBe(asRgb(GLYPH));
     expect(query(`[${NS}-badge]`)!.style.backgroundColor).toBe(asRgb(BADGE_BG));
-    expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe("0 0 0 2px #0f766e");
+    // The ring is white regardless of liveColor — it never tracked the chip's
+    // fill in the first place.
+    expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe(`0 0 0 2px ${RING}`);
 
     // The override is the ARMED fill only — idle stays the light gray.
     picker.disable();
