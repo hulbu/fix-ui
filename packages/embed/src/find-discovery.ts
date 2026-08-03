@@ -31,11 +31,25 @@ export const DISCOVERY_FILE = ".fix-ui.json";
  * The bridge published for the project `from` belongs to, or `undefined`.
  *
  * Walks up from `from` because a dev server's cwd is not reliably the project
- * root — Next can be started from a subdirectory, and a Vite root can be
- * `src/`. The walk stops at the first directory holding a `package.json`: that
- * is where the project ends, and a discovery file above it belongs to somebody
- * else's app. Sending this page's notes to a stranger's bridge would be worse
- * than finding nothing.
+ * root — Next can be started from a subdirectory, a Vite root can be `src/`,
+ * and in a monorepo the app is a package while `fixui dev` runs at the top.
+ *
+ * The walk stops at the **repository** root: a directory holding a `.git`
+ * (a directory in a clone, a file in a worktree or submodule). That is the
+ * boundary that matters. Within one repository a discovery file above you is
+ * still yours — the workspace root running `fixui dev` for `website/` is the
+ * common case, and stopping at `website/package.json` would find nothing and
+ * queue every note silently. Crossing into a *different* repository is the
+ * thing that must never happen: sending this page's notes to a stranger's
+ * bridge would be worse than finding nothing.
+ *
+ * With no `.git` anywhere above (a tarball, a container image with history
+ * stripped) there is no boundary to trust, so we fall back to the older,
+ * narrower rule and stop at the first `package.json`. That keeps this change
+ * from making any setup worse than it already was.
+ *
+ * Nearest wins throughout: a package that runs its own `fixui dev` owns its
+ * notes, even inside a workspace whose root also published one.
  *
  * Never throws. Missing, unreadable, truncated and unrecognized all mean the
  * same thing to a caller that must render either way: no bridge.
@@ -48,13 +62,26 @@ export async function findDiscovery(from: string): Promise<Discovery | undefined
     return undefined;
   }
 
+  // A discovery file found above the first `package.json` is only ours if this
+  // is a repository — held here until the walk proves a repository root exists.
+  let aboveProject: Discovery | undefined;
+  let leftProject = false;
+
   for (;;) {
     const discovery = await readDiscoveryAt(dir);
-    if (discovery !== undefined) return discovery;
-    if (await isFile(path.join(dir, "package.json"))) return undefined;
+    if (discovery !== undefined) {
+      if (!leftProject) return discovery; // inside our own package: unambiguous
+      aboveProject ??= discovery;
+    }
+
+    // Repository root: every directory walked so far was inside it, so
+    // whatever we are holding is ours — and the walk goes no further.
+    if (await exists(path.join(dir, ".git"))) return aboveProject;
+
+    if (!leftProject && (await exists(path.join(dir, "package.json")))) leftProject = true;
 
     const parent = path.dirname(dir);
-    if (parent === dir) return undefined; // filesystem root
+    if (parent === dir) return undefined; // filesystem root, no repository: fall back
     dir = parent;
   }
 }
@@ -94,9 +121,10 @@ function isPid(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) > 0;
 }
 
-async function isFile(file: string): Promise<boolean> {
+/** Whether a path exists at all — `.git` is a directory or a file by turns. */
+async function exists(entry: string): Promise<boolean> {
   try {
-    await access(file);
+    await access(entry);
     return true;
   } catch {
     return false;
