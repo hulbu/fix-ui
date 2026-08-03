@@ -111,6 +111,8 @@ const BADGE_BG = "#fb923c";
 const BADGE_FG = "#0f172a";
 /** The badge's ring — one colour, both states. */
 const RING = "#ffffff";
+/** The chip's own border — same white as the badge's ring, both states. */
+const CHIP_BORDER = "#ffffff";
 
 /**
  * A pointer event. jsdom has no `PointerEvent` constructor and no
@@ -643,6 +645,32 @@ describe("chip state colours", () => {
     expect(ring()).toBe(`0 0 0 2px ${RING}`);
   });
 
+  it("borders the chip in white, identically in both states — the same invariant as the badge ring", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    const chip = query(`[${NS}-chip]`)!;
+
+    // Idle: white border.
+    expect(chip.style.borderColor).toBe(asRgb(CHIP_BORDER));
+    expect(chip.style.borderColor).not.toBe(asRgb(CHIP_IDLE));
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    // Live: same white border, not the live fill.
+    expect(chip.style.borderColor).toBe(asRgb(CHIP_BORDER));
+    expect(chip.style.borderColor).not.toBe(asRgb(LIVE));
+
+    const armedBorder = chip.style.borderColor;
+    picker.disable();
+
+    // Byte-for-byte identical across the state flip.
+    expect(chip.style.borderColor).toBe(asRgb(CHIP_BORDER));
+    expect(chip.style.borderColor).toBe(armedBorder);
+  });
+
   it("honours a liveColor override without touching the accent or the badge", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT, liveColor: "#0f766e" });
@@ -657,6 +685,8 @@ describe("chip state colours", () => {
     // The ring is white regardless of liveColor — it never tracked the chip's
     // fill in the first place.
     expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe(`0 0 0 2px ${RING}`);
+    // Same for the chip's own border.
+    expect(query(`[${NS}-chip]`)!.style.borderColor).toBe(asRgb(CHIP_BORDER));
 
     // The override is the ARMED fill only — idle stays the light gray.
     picker.disable();

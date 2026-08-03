@@ -27,10 +27,16 @@ const TOAST_MS = 2600;
 /** The chip at rest. */
 const CHIP_IDLE = "#e2e8f0";
 /**
- * The idle chip's edge. A light-gray disc on a white page is a disc nobody can
- * find; this (with the drop shadow) is what gives it an outline to sit behind.
+ * The chip's edge, in BOTH states — same white, same 2px, as the badge's own
+ * ring (`BADGE_RING`). A light-gray disc (idle) and a run-green disc (live)
+ * both need an outline to read as a floating object on an arbitrary host
+ * page, and a border that changed with state would make the state change
+ * harder to read, not easier — same reasoning as `CHIP_GLYPH`. With a white
+ * border the drop shadow is the only thing separating the chip from a white
+ * host page, so it is strengthened to carry that alone (see the `box-shadow`
+ * on `[${NS}-chip]` below).
  */
-const CHIP_IDLE_BORDER = "#cbd5e1";
+const CHIP_BORDER = "#ffffff";
 /** Armed. See `PickerOptions.liveColor`. */
 const LIVE_DEFAULT = "#22c55e";
 /**
@@ -200,10 +206,10 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-chip]{position:fixed;inset:auto;margin:0;overflow:visible;
       box-sizing:border-box;z-index:2147483601;right:16px;bottom:16px;
       width:44px;height:44px;border-radius:999px;cursor:pointer;
-      border:1px solid ${CHIP_IDLE_BORDER};
+      border:2px solid ${CHIP_BORDER};
       background:${CHIP_IDLE};color:${CHIP_GLYPH};font-size:19px;
-      box-shadow:0 8px 24px -8px #00000066;}
-    [${NS}-chip][data-on]{background:${live};border-color:${live};}
+      box-shadow:0 10px 28px -6px #00000080;}
+    [${NS}-chip][data-on]{background:${live};}
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
       border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
       font:700 11px/19px system-ui,sans-serif;padding:0 4px;
@@ -393,9 +399,9 @@ export function createPicker(opts: PickerOptions): Picker {
     chip.style.backgroundColor = chipColor();
     // One glyph colour for both fills — see CHIP_GLYPH.
     chip.style.color = CHIP_GLYPH;
-    // Idle needs an edge to survive a white page; live is loud enough to be its
-    // own edge, and a gray hairline on green would just read as a seam.
-    chip.style.borderColor = active ? live : CHIP_IDLE_BORDER;
+    // One border colour for both fills, matching the badge's own ring — see
+    // CHIP_BORDER.
+    chip.style.borderColor = CHIP_BORDER;
     const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`);
     // The badge overhangs the chip's edge; a 2px WHITE ring is what separates
     // the two discs at the overlap — in either state, and readable regardless
