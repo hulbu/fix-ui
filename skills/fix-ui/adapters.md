@@ -96,10 +96,26 @@ If the chip is missing, work through these in order:
 |---|---|
 | No chip at all | The adapter line isn't rendering — wrong file, or outside `<body>` |
 | Module not found under `node_modules` | `transpilePackages` missing (Next) |
+| `Module not found: @hulbu/fixui` | The dependency is in the wrong package.json (see *Monorepos*), or the bundler's compile root doesn't cover it — a `link:`/`file:` dependency resolving outside the project tree is refused by Turbopack and by Vite's `fs.allow`. Install a real copy (a packed tarball, or the published package) rather than widening the root |
 | Chip present, notes never arrive | Dev server isn't running under `fixui dev` — no bridge, so notes queue |
 | Chip present, badge counts up, inbox empty | Same as above; the notes are safe and flush when a bridge appears |
 
 Report the integration done only after you have seen the chip.
+
+## Monorepos
+
+Three rules, and they are not the same rule.
+
+**The dependency goes in the package that renders the app** — `website/package.json`, not the workspace root. With pnpm's isolated `node_modules`, a root-level install is simply not on that package's resolution path, and the import fails however correct the adapter line is.
+
+**`fixui dev` wraps the ROOT dev script** — whatever command launches the whole stack (`turbo dev`, `pnpm -r dev`, a `run.sh`). One bridge then covers every app in the repo; wrapping each package's own dev script instead gives you several bridges racing for one inbox.
+
+```json
+// package.json at the repo root
+"dev": "fixui dev -- turbo dev"
+```
+
+**The discovery file is written where `fixui dev` runs** — the repo root. The adapters walk up from the dev server's cwd to the repository root (the nearest `.git`) looking for `.fix-ui.json`, so an app in a subdirectory finds a bridge started above it. Nearest wins: a package running its own `fixui dev` keeps its own notes.
 
 ## Multiple apps at once
 
