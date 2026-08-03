@@ -13,6 +13,8 @@
  *   server") rather than an empty list that reads like "nothing to do".
  * - **Bare in a terminal** (a TTY on stdin, no subcommand): the owner role with
  *   no dev command to outlive — a bridge you start and stop yourself.
+ * - **Setup** (`fixui init`): not a bridge at all — it wires a project up once
+ *   (init.ts) and exits.
  *
  * The owner is looked up on every tool call, not once at startup: a harness
  * spawns its MCP servers when the session opens, which is routinely *before*
@@ -27,8 +29,10 @@
  */
 import { randomBytes } from "node:crypto";
 import { watch } from "node:fs";
+import path from "node:path";
 import { parseDevCommand, runOwner, type OwnerOptions } from "./dev.js";
 import { liveBridge, readDiscovery } from "./discovery.js";
+import { runInit } from "./init.js";
 import { httpTools, serveMcpOverStdio, type InboxChanges, type ReviewTools } from "./mcp.js";
 import { HOST } from "./server.js";
 import { INBOX_FILE } from "./storage.js";
@@ -39,6 +43,21 @@ export const NO_BRIDGE = "no fix-ui bridge for this project — start your dev s
 
 /** A bad invocation: reported as a one-line message, never a stack trace. */
 class UsageError extends Error {}
+
+/** `--name value` or `--name=value`, stopping at `--` so a dev command's own
+ *  flags are never mistaken for ours. */
+function flagValue(argv: string[], name: string): string | undefined {
+  for (const [index, arg] of argv.entries()) {
+    if (arg === "--") return undefined;
+    if (arg === name) {
+      const value = argv[index + 1];
+      if (value === undefined) throw new UsageError(`${name} requires a value`);
+      return value;
+    }
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return undefined;
+}
 
 function portFlag(argv: string[]): string | undefined {
   for (const [index, arg] of argv.entries()) {
@@ -201,6 +220,19 @@ async function own(options: OwnerOptions): Promise<number> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const project = process.cwd();
+
+  // ── Setup: one command, run once in the project ──────────────────────────
+  // Nothing here binds a port or serves MCP, so stdout is the developer's again.
+  if (argv[0] === "init") {
+    const local = flagValue(argv.slice(1), "--local");
+    await runInit({
+      project,
+      // Relative is accepted and resolved: `--local ../fix-ui` is what a hand types.
+      local: local === undefined ? undefined : path.resolve(project, local),
+      log: (message) => console.log(message),
+    });
+    return;
+  }
 
   // ── Owner: the dev server's wrapper ──────────────────────────────────────
   if (argv[0] === "dev") {

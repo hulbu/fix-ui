@@ -274,3 +274,44 @@ it("keeps stdout clear for the MCP transport", async () => {
   expect(proxy.stdout).toBe("");
   expect(proxy.child.exitCode).toBeNull(); // still there, serving MCP for its own cwd
 });
+
+/**
+ * `init` is the one subcommand that neither binds nor serves: the real bin,
+ * run once in a project, with the dependency already present so nothing here
+ * reaches the network.
+ */
+it("init wires a project up and prints what it changed", async () => {
+  const project = await tempProject();
+  await writeFile(
+    path.join(project, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "demo",
+        scripts: { dev: "vite" },
+        devDependencies: {
+          vite: "^6.0.0",
+          "@hulbu/fixui": "^0.0.1",
+          "fixui-bridge": "^0.0.1",
+        },
+      },
+      undefined,
+      2,
+    )}\n`,
+  );
+  await writeFile(path.join(project, "vite.config.ts"), "export default { plugins: [] };\n");
+
+  const run = runCli(["init"], project);
+  expect(await run.exited).toBe(0);
+
+  expect(JSON.parse(await readFile(path.join(project, ".mcp.json"), "utf8"))).toEqual({
+    mcpServers: { fixui: { command: "npx", args: ["fixui-bridge"] } },
+  });
+  expect(await readFile(path.join(project, "package.json"), "utf8")).toContain(
+    "fixui dev -- vite",
+  );
+  expect(await readFile(path.join(project, "vite.config.ts"), "utf8")).toContain("fixui()");
+  expect(await readFile(path.join(project, ".claude/skills/fix-ui/SKILL.md"), "utf8")).toContain(
+    "name: fix-ui",
+  );
+  expect(run.stdout).toContain("Next:");
+});
