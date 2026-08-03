@@ -229,8 +229,10 @@ export function createPicker(opts: PickerOptions): Picker {
       background:${accent};color:${CHIP_GLYPH};font-size:19px;
       box-shadow:${CHIP_SHADOW};}
     [${NS}-chip][${NS}-dragging]{cursor:grabbing;}
-    [${NS}-chip][${NS}-pulse]{animation:${NS}-pulse 1.8s ease-in-out infinite;}
     [${NS}-chip][${NS}-static]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
+    [${NS}-glyph]{display:inline-block;}
+    [${NS}-chip][${NS}-pulse] [${NS}-glyph]{
+      animation:${NS}-glyph-pulse 1.8s ease-in-out infinite;}
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
       border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
       font:700 11px/19px system-ui,sans-serif;padding:0 4px;
@@ -286,21 +288,23 @@ export function createPicker(opts: PickerOptions): Picker {
       padding:6px 12px;font:600 12px system-ui,sans-serif;white-space:nowrap;}
     [${NS}-approve]{background:${accent};color:#fff;}
     [${NS}-changes]{background:#ffffff26;color:#fff;}
-    /* "Armed" as motion, since the colour no longer moves. Slow and shallow on
-       purpose — this sits on top of somebody's app all day. Transform only:
-       animating width/height would relayout the host page every frame. */
-    @keyframes ${NS}-pulse{
-      0%,100%{transform:scale(1);}
-      50%{transform:scale(1.04);}
+    /* "Armed" as motion, since neither the colour nor the chip's own geometry
+       moves — the circle is static in every state. Only the GLYPH inside it
+       pulses, and only in opacity: subtle, slow, and shallow on purpose, since
+       this sits on top of somebody's app all day. The badge is a sibling of
+       the glyph, not a child of it, so the count never fades with it. */
+    @keyframes ${NS}-glyph-pulse{
+      0%,100%{opacity:1;}
+      50%{opacity:.45;}
     }
     /* The same preference the JS reads, honoured by the engine itself for the
        cases the JS cannot see it (no matchMedia, a preference that flips
-       between paints). Same specificity as the rule above, stated later, so it
-       wins — and it substitutes the static ring rather than leaving the armed
-       chip indistinguishable from the idle one. */
+       between paints). Same specificity as the rules above, stated later, so
+       it wins — and it substitutes the static ring rather than leaving the
+       armed chip indistinguishable from the idle one. */
     @media (prefers-reduced-motion: reduce){
-      [${NS}-chip][${NS}-pulse]{animation:none;
-        box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
+      [${NS}-chip][${NS}-pulse]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
+      [${NS}-chip][${NS}-pulse] [${NS}-glyph]{animation:none;}
     }
   `;
 
@@ -418,7 +422,13 @@ export function createPicker(opts: PickerOptions): Picker {
     chip = document.createElement("button");
     chip.setAttribute(`${NS}-chip`, "");
     chip.setAttribute("aria-label", "UI feedback notes");
-    chip.textContent = "✛";
+    // Its own element, not the chip's textContent: the armed animation targets
+    // this glyph alone (opacity), so the badge — the chip's other child —
+    // never fades with it.
+    const glyph = document.createElement("span");
+    glyph.setAttribute(`${NS}-glyph`, "");
+    glyph.textContent = "✛";
+    chip.append(glyph);
     // Picking active → chip stops picking; otherwise it opens the notes panel.
     chip.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -445,8 +455,9 @@ export function createPicker(opts: PickerOptions): Picker {
    * somebody's page all day, and a mark that changes colour is a different
    * mark. (Two earlier rounds tried to make the fill carry "armed": the accent
    * hid the badge sitting on it, and a run-green stopped the chip being the
-   * chip.) What carries the state is MOTION — a slow, shallow pulse — with a
-   * persistent ring standing in for anyone who asked for less of it.
+   * chip.) The chip's own GEOMETRY doesn't move either — no scale, no halo —
+   * only the glyph inside it pulses, in opacity, with a persistent ring on the
+   * chip standing in for anyone who asked for less of even that.
    *
    * The colours are also in the stylesheet; restating them inline is what
    * survives a page whose own CSS is hostile (and what a test can read back).

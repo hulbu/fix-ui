@@ -726,17 +726,21 @@ describe("chip state colours", () => {
 
 /**
  * With the fill pinned to the accent, MOTION is what says "armed" — a slow,
- * low-amplitude pulse. Motion is also the one channel some people have turned
- * off at the OS, and a state you can only perceive through motion is a broken
- * state, so `prefers-reduced-motion: reduce` gets a STATIC substitute (a
- * persistent outer ring) rather than nothing at all.
+ * low-amplitude pulse. The chip's own circle stays completely still (no
+ * transform, no scale, no animated box-shadow); only the GLYPH inside it
+ * pulses, in opacity, so the mark's silhouette never changes. Motion is also
+ * the one channel some people have turned off at the OS, and a state you can
+ * only perceive through motion is a broken state, so `prefers-reduced-motion:
+ * reduce` gets a STATIC substitute on the chip (a persistent outer ring)
+ * rather than nothing at all.
  */
 describe("armed chip motion", () => {
-  it("pulses only while armed, and never animates the box's geometry", () => {
+  it("pulses the glyph's opacity only while armed, and never animates the chip's own geometry", () => {
     const undo = stubReducedMotion(false);
     try {
       const picker = make({ transport: fakeTransport(), accent: ACCENT });
       const chip = query(`[${NS}-chip]`)!;
+      const glyph = query(`[${NS}-glyph]`)!;
 
       expect(chip.hasAttribute(`${NS}-pulse`)).toBe(false);
 
@@ -747,23 +751,34 @@ describe("armed chip motion", () => {
       picker.disable();
       expect(chip.hasAttribute(`${NS}-pulse`)).toBe(false);
 
-      // The animation itself: slow, infinite, eased, and transform-only —
-      // animating width/height would relayout the host page 60 times a second.
       const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
-      expect(sheet).toContain(`[${NS}-chip][${NS}-pulse]`);
-      expect(sheet).toContain(`animation:${NS}-pulse 1.8s ease-in-out infinite`);
+
+      // The chip itself carries no animation rule at all — no scale, no halo,
+      // no animated box-shadow. Its only armed-state rule is the static
+      // reduced-motion ring substitute, tested separately below.
+      expect(sheet).not.toMatch(new RegExp(`\\[${NS}-chip\\]\\[${NS}-pulse\\]\\s*\\{[^}]*animation`));
+
+      // The animation lives on the glyph: slow, infinite, eased, opacity-only.
+      expect(sheet).toContain(`[${NS}-chip][${NS}-pulse] [${NS}-glyph]`);
+      expect(sheet).toContain(`animation:${NS}-glyph-pulse 1.8s ease-in-out infinite`);
       const frames = sheet.slice(
-        sheet.indexOf(`@keyframes ${NS}-pulse`),
+        sheet.indexOf(`@keyframes ${NS}-glyph-pulse`),
         sheet.indexOf("@media (prefers-reduced-motion: reduce)"),
       );
-      expect(frames).toContain("transform:scale(1.04)");
-      expect(frames).not.toMatch(/(width|height):/);
+      expect(frames).toContain("opacity:1");
+      expect(frames).toContain("opacity:.45");
+      expect(frames).not.toMatch(/transform|scale|width|height|box-shadow/);
+
+      // The glyph is its own element — not the chip's textContent — precisely
+      // so the animation can target it alone.
+      expect(glyph.hasAttribute(`${NS}-glyph`)).toBe(true);
+      expect(glyph.textContent).toBe("✛");
     } finally {
       undo();
     }
   });
 
-  it("swaps the pulse for a static ring when the user asked for less motion", () => {
+  it("swaps the pulse for a static ring on the chip when the user asked for less motion", () => {
     const undo = stubReducedMotion(true);
     try {
       const picker = make({ transport: fakeTransport(), accent: ACCENT });
@@ -788,11 +803,12 @@ describe("armed chip motion", () => {
   });
 
   /** The CSS must honour the preference too, for engines the JS never asks. */
-  it("also disables the animation in the stylesheet under reduced motion", () => {
+  it("also disables the glyph's animation in the stylesheet under reduced motion", () => {
     make({ transport: fakeTransport(), accent: ACCENT });
     const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
     const query_ = sheet.slice(sheet.indexOf("@media (prefers-reduced-motion: reduce)"));
-    expect(query_).toContain("animation:none");
+    expect(query_).toContain(`[${NS}-chip][${NS}-pulse] [${NS}-glyph]{animation:none;}`);
+    expect(query_).toContain(`0 0 0 3px ${ACCENT}`);
   });
 
   /** No matchMedia at all (jsdom's own default, and old engines) → it pulses. */
@@ -801,6 +817,39 @@ describe("armed chip motion", () => {
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
     picker.enable();
     expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
+  });
+});
+
+/**
+ * The badge lives inside the chip, right beside the glyph — but it must not
+ * be inside the glyph's own element, or the glyph's opacity animation would
+ * take the note count down with it every 1.8s. This is the regression the
+ * whole restructure (glyph as its own `<span>`) exists to prevent.
+ */
+describe("badge independence from the glyph's pulse", () => {
+  it("keeps the badge's opacity untouched while armed and the glyph pulses", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const chip = query(`[${NS}-chip]`)!;
+    const glyph = query(`[${NS}-glyph]`)!;
+    const badge = query(`[${NS}-badge]`)!;
+
+    expect(chip.hasAttribute(`${NS}-pulse`)).toBe(true);
+    // The badge is a sibling of the glyph inside the chip, never its child —
+    // so the glyph's animation selector (a descendant combinator) can never
+    // reach it.
+    expect(glyph.contains(badge)).toBe(false);
+    expect(badge.parentElement).toBe(chip);
+    // No inline or animated opacity on the badge: it is fully, statically
+    // visible the whole time the glyph is pulsing.
+    expect(badge.style.opacity).toBe("");
+    expect(badge.style.animation).toBe("");
+    expect(badge.textContent).toBe("1");
   });
 });
 
