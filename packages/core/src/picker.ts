@@ -25,9 +25,27 @@ const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel]
 const SUPPRESSED = ["pointerdown", "pointerup", "mousedown", "mouseup"];
 const TOAST_MS = 2600;
 /** The chip at rest, and the ring the badge wears while the chip is at rest. */
-const CHIP_IDLE = "#1c1c1c";
+const CHIP_IDLE = "#e2e8f0";
+/**
+ * The idle chip's edge. A light-gray disc on a white page is a disc nobody can
+ * find; this (with the drop shadow) is what gives it an outline to sit behind.
+ */
+const CHIP_IDLE_BORDER = "#cbd5e1";
 /** Armed. See `PickerOptions.liveColor`. */
-const LIVE_DEFAULT = "#15803d";
+const LIVE_DEFAULT = "#22c55e";
+/**
+ * The chip's glyph, in BOTH states. A foreground that changes with state makes
+ * the state change harder to read, not easier — the FILL carries the state, so
+ * the mark on top of it stays put. Dark slate clears 7:1 on both fills.
+ */
+const CHIP_GLYPH = "#0f172a";
+/**
+ * The note count's disc, and its text. Lighter than the accent so it reads as a
+ * count rather than a second alarm, and dark-on-light so the number survives
+ * (white on this orange is 2.4:1 — unreadable at 11px).
+ */
+const BADGE_BG = "#fb923c";
+const BADGE_FG = "#0f172a";
 /** The panel's declared width, and the fallback when nothing is laid out yet. */
 const PANEL_WIDTH = 320;
 /** How much of a dragged panel must stay inside the viewport. */
@@ -46,8 +64,9 @@ export interface PickerOptions {
    * The chip's fill while the picker is armed — a STATE colour, deliberately
    * not derived from `accent`. Green reads as "live" without being taught, and
    * it keeps the chip from competing with the accent-coloured highlight box on
-   * the page. Default `#15803d` (5:1 against the white glyph, and ≥3:1 against
-   * both white and near-black page backgrounds).
+   * the page. Default `#22c55e`: a run-green bright enough that flipping from
+   * the light-gray idle fill is unmistakable at 44px, while still holding
+   * 7.8:1 against the dark glyph.
    */
   liveColor?: string;
   /** Show the floating chip. Default true — it is the primary affordance. */
@@ -169,12 +188,14 @@ export function createPicker(opts: PickerOptions): Picker {
       transform:translateX(-50%);background:#1c1c1c;color:#fff;
       padding:8px 16px;border-radius:999px;font:600 13px system-ui,sans-serif;}
     [${NS}-chip]{position:fixed;inset:auto;margin:0;overflow:visible;
-      z-index:2147483601;right:16px;bottom:16px;
-      width:44px;height:44px;border-radius:999px;border:0;cursor:pointer;
-      background:${CHIP_IDLE};color:#fff;font-size:19px;box-shadow:0 8px 24px -8px #00000066;}
-    [${NS}-chip][data-on]{background:${live};}
+      box-sizing:border-box;z-index:2147483601;right:16px;bottom:16px;
+      width:44px;height:44px;border-radius:999px;cursor:pointer;
+      border:1px solid ${CHIP_IDLE_BORDER};
+      background:${CHIP_IDLE};color:${CHIP_GLYPH};font-size:19px;
+      box-shadow:0 8px 24px -8px #00000066;}
+    [${NS}-chip][data-on]{background:${live};border-color:${live};}
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
-      border-radius:999px;background:${accent};color:#fff;
+      border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
       font:700 11px/19px system-ui,sans-serif;padding:0 4px;
       box-shadow:0 0 0 2px ${CHIP_IDLE};}
     [${NS}-chip][data-on] [${NS}-badge]{box-shadow:0 0 0 2px ${live};}
@@ -343,10 +364,11 @@ export function createPicker(opts: PickerOptions): Picker {
   }
 
   /**
-   * The chip's fill. Armed is a STATE, so it gets a state colour (green) rather
-   * than the accent — the accent is already spoken for by the highlight box on
-   * the page, and the badge sitting on the chip is accent too, so an accent
-   * chip would swallow the note count whole.
+   * The chip's fill — the ONE thing that moves with state. Armed is a STATE, so
+   * it gets a state colour (run-green) rather than the accent, which is already
+   * spoken for by the highlight box on the page. Idle is a light gray: a dark
+   * idle chip and a dark-ish live chip read as the same chip, which is exactly
+   * what users reported ("icon is dark and when clicking it's still dark").
    */
   function chipColor(): string {
     return active ? live : CHIP_IDLE;
@@ -361,6 +383,11 @@ export function createPicker(opts: PickerOptions): Picker {
   function paintChip(): void {
     if (!chip) return;
     chip.style.backgroundColor = chipColor();
+    // One glyph colour for both fills — see CHIP_GLYPH.
+    chip.style.color = CHIP_GLYPH;
+    // Idle needs an edge to survive a white page; live is loud enough to be its
+    // own edge, and a gray hairline on green would just read as a seam.
+    chip.style.borderColor = active ? live : CHIP_IDLE_BORDER;
     const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`);
     // The badge overhangs the chip's edge; a 2px ring in the CHIP's colour is
     // what separates the two discs at the overlap, in either state.
@@ -395,9 +422,9 @@ export function createPicker(opts: PickerOptions): Picker {
       const badge = document.createElement("span");
       badge.setAttribute(`${NS}-badge`, "");
       // A count means the same thing armed or idle, so it looks the same either
-      // way: accent on white, never the chip's state colour.
-      badge.style.backgroundColor = accent;
-      badge.style.color = "#fff";
+      // way: one orange, dark text, never the chip's state colour.
+      badge.style.backgroundColor = BADGE_BG;
+      badge.style.color = BADGE_FG;
       badge.textContent = String(entries.length);
       chip.append(badge);
     }
@@ -895,7 +922,7 @@ export function createPicker(opts: PickerOptions): Picker {
     for (const type of SUPPRESSED) window.addEventListener(type, suppress, true);
     document.body.style.cursor = "crosshair";
     chip?.setAttribute("data-on", "");
-    paintChip(); // green: live. The badge keeps its accent and its ring follows.
+    paintChip(); // green: live. The badge keeps its orange and its ring follows.
     // Re-layer above whatever opened since the chip was first shown.
     place(chip);
     toast("Pick an element, leave a note");

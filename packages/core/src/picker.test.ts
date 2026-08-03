@@ -103,8 +103,12 @@ function asRgb(hex: string): string {
 
 const ACCENT = "#ef5b2a";
 /** The default "live" green (`PickerOptions.liveColor`). */
-const LIVE = "#15803d";
-const CHIP_IDLE = "#1c1c1c";
+const LIVE = "#22c55e";
+const CHIP_IDLE = "#e2e8f0";
+/** One glyph colour, both states. */
+const GLYPH = "#0f172a";
+const BADGE_BG = "#fb923c";
+const BADGE_FG = "#0f172a";
 
 /**
  * A pointer event. jsdom has no `PointerEvent` constructor and no
@@ -530,14 +534,19 @@ describe("createPicker", () => {
 });
 
 /**
- * Arming used to paint the chip in the accent colour — the same colour as the
- * badge sitting on it, so the note count vanished exactly when the user was
- * most likely to be counting. The chip carries STATE (green = live), the badge
- * carries a QUANTITY (accent, always); a quantity that changes colour with
- * state is a quantity nobody can read.
+ * Two rounds of user reports shaped these colours. First, arming painted the
+ * chip in the accent — the same colour as the badge sitting on it, so the note
+ * count vanished exactly when the user was most likely to be counting. Then the
+ * live colour was a dark green next to a near-black idle chip, and the state
+ * change read as no change at all ("icon is dark and when clicking it's still
+ * dark"), with the badge's chip-coloured ring showing up as a heavy dark
+ * outline. So: the FILL carries STATE (light gray → run-green, far apart in
+ * lightness), the glyph never moves, and the badge carries a QUANTITY in one
+ * orange with dark text — a quantity that changes colour with state is a
+ * quantity nobody can read.
  */
 describe("chip state colours", () => {
-  it("arms green rather than accent, and keeps the badge accent so the count stays readable", async () => {
+  it("arms to the run-green from a light-gray idle — two visibly different fills, neither the accent", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
 
@@ -548,24 +557,39 @@ describe("chip state colours", () => {
     const chip = query(`[${NS}-chip]`)!;
     expect(picker.active).toBe(true);
     expect(chip.hasAttribute("data-on")).toBe(true);
-    expect(chip.style.backgroundColor).toBe(asRgb(LIVE));
-    expect(chip.style.backgroundColor).not.toBe(asRgb(ACCENT));
-
-    const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`)!;
-    expect(badge.textContent).toBe("1");
-    expect(badge.style.backgroundColor).toBe(asRgb(ACCENT));
-    expect(badge.style.color).toBe(asRgb("#fff"));
+    const armed = chip.style.backgroundColor;
+    expect(armed).toBe(asRgb(LIVE));
 
     picker.disable();
+    const idle = chip.style.backgroundColor;
+    expect(idle).toBe(asRgb(CHIP_IDLE));
 
-    expect(chip.style.backgroundColor).toBe(asRgb(CHIP_IDLE));
-    // The count means the same thing in both states, so it looks the same.
-    expect(chip.querySelector<HTMLElement>(`[${NS}-badge]`)!.style.backgroundColor).toBe(
-      asRgb(ACCENT),
-    );
+    // The whole point: the two states cannot be the same colour, and neither
+    // may be the accent (which owns the highlight box on the page).
+    expect(armed).not.toBe(idle);
+    expect(armed).not.toBe(asRgb(ACCENT));
+    expect(idle).not.toBe(asRgb(ACCENT));
   });
 
-  it("rings the badge in the chip's own colour, in both states", async () => {
+  it("keeps one glyph colour across both states", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    const chip = query(`[${NS}-chip]`)!;
+    expect(chip.style.color).toBe(asRgb(GLYPH));
+    // The old white glyph was legible on a dark chip and is invisible on both
+    // of the new light fills.
+    expect(chip.style.color).not.toBe(asRgb("#fff"));
+
+    picker.enable();
+    const armedGlyph = chip.style.color;
+    picker.disable();
+
+    expect(armedGlyph).toBe(asRgb(GLYPH));
+    expect(chip.style.color).toBe(armedGlyph);
+  });
+
+  it("paints the badge the lighter orange with dark text in BOTH states", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
 
@@ -573,17 +597,47 @@ describe("chip state colours", () => {
     clickSequence(query("#cta")!);
     await typeAndSave("a note");
 
+    const badge = (): HTMLElement => query(`[${NS}-badge]`)!;
+    expect(badge().textContent).toBe("1");
+    expect(badge().style.backgroundColor).toBe(asRgb(BADGE_BG));
+    expect(badge().style.color).toBe(asRgb(BADGE_FG));
+    // Lighter than the accent, and not the accent.
+    expect(badge().style.backgroundColor).not.toBe(asRgb(ACCENT));
+
+    picker.disable();
+
+    // The count means the same thing in both states, so it looks the same.
+    expect(badge().style.backgroundColor).toBe(asRgb(BADGE_BG));
+    expect(badge().style.color).toBe(asRgb(BADGE_FG));
+  });
+
+  it("rings the badge in the chip's own current background, in both states", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const chip = query(`[${NS}-chip]`)!;
     const ring = (): string => query(`[${NS}-badge]`)!.style.boxShadow;
+    /** The ring's colour, in the same units the chip reports its fill in. */
+    const ringColor = (): string => asRgb(ring().replace("0 0 0 2px ", ""));
+
     expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
+    expect(ringColor()).toBe(chip.style.backgroundColor);
 
     picker.disable();
     expect(ring()).toBe(`0 0 0 2px ${CHIP_IDLE}`);
+    expect(ringColor()).toBe(chip.style.backgroundColor);
+    // No more heavy dark outline around the count.
+    expect(ringColor()).not.toBe(asRgb("#1c1c1c"));
 
     picker.enable();
     expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
   });
 
-  it("honours a liveColor override without touching the accent", async () => {
+  it("honours a liveColor override without touching the accent or the badge", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const picker = make({ transport: fakeTransport(), accent: ACCENT, liveColor: "#0f766e" });
 
@@ -592,8 +646,13 @@ describe("chip state colours", () => {
     await typeAndSave("a note");
 
     expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb("#0f766e"));
-    expect(query(`[${NS}-badge]`)!.style.backgroundColor).toBe(asRgb(ACCENT));
+    expect(query(`[${NS}-chip]`)!.style.color).toBe(asRgb(GLYPH));
+    expect(query(`[${NS}-badge]`)!.style.backgroundColor).toBe(asRgb(BADGE_BG));
     expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe("0 0 0 2px #0f766e");
+
+    // The override is the ARMED fill only — idle stays the light gray.
+    picker.disable();
+    expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb(CHIP_IDLE));
   });
 });
 
