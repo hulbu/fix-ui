@@ -42,6 +42,8 @@ export interface FixUiOptions {
    */
   label?: string;
   accent?: string;
+  /** The chip's fill while armed. Default green — see core's `liveColor`. */
+  liveColor?: string;
   chip?: boolean;
   onSaved?: (entry: FeedbackEntry) => void;
 }
@@ -105,6 +107,7 @@ export function initFixUi(
     transport,
     project: options.project,
     accent: options.accent,
+    liveColor: options.liveColor,
     chip: options.chip,
     onSaved: options.onSaved,
     // componentName stays core's default (React fibers) — nothing here knows better.

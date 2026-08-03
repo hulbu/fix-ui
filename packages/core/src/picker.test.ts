@@ -94,6 +94,51 @@ function query(selector: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(selector);
 }
 
+/** jsdom normalises inline colours to `rgb()`; hexes never compare equal. */
+function asRgb(hex: string): string {
+  const probe = document.createElement("div");
+  probe.style.backgroundColor = hex;
+  return probe.style.backgroundColor;
+}
+
+const ACCENT = "#ef5b2a";
+/** The default "live" green (`PickerOptions.liveColor`). */
+const LIVE = "#15803d";
+const CHIP_IDLE = "#1c1c1c";
+
+/**
+ * A pointer event. jsdom has no `PointerEvent` constructor and no
+ * `setPointerCapture`, so a drag is synthesized from a MouseEvent carrying a
+ * `pointerId` — which is all the picker reads off it.
+ */
+function pointer(type: string, x: number, y: number): MouseEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    clientX: x,
+    clientY: y,
+  });
+  Object.defineProperty(event, "pointerId", { value: 7 });
+  return event;
+}
+
+/** Grab `from`, drag the pointer to (x, y), let go. */
+function dragFrom(from: Element, startX: number, startY: number, x: number, y: number): MouseEvent {
+  const down = pointer("pointerdown", startX, startY);
+  from.dispatchEvent(down);
+  from.dispatchEvent(pointer("pointermove", x, y));
+  from.dispatchEvent(pointer("pointerup", x, y));
+  return down;
+}
+
+/** Open the saved-notes panel the way a person does — the chip. */
+async function openPanel(): Promise<HTMLElement> {
+  query(`[${NS}-chip]`)!.click();
+  await settle();
+  return query(`[${NS}-panel]`)!;
+}
+
 /** Toasts stack — the newest one is the reply to what just happened. */
 function lastToast(): string {
   const all = document.querySelectorAll(`[${NS}-toast]`);
@@ -482,4 +527,177 @@ describe("createPicker", () => {
       expect(picker.active).toBe(false);
     },
   );
+});
+
+/**
+ * Arming used to paint the chip in the accent colour — the same colour as the
+ * badge sitting on it, so the note count vanished exactly when the user was
+ * most likely to be counting. The chip carries STATE (green = live), the badge
+ * carries a QUANTITY (accent, always); a quantity that changes colour with
+ * state is a quantity nobody can read.
+ */
+describe("chip state colours", () => {
+  it("arms green rather than accent, and keeps the badge accent so the count stays readable", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const chip = query(`[${NS}-chip]`)!;
+    expect(picker.active).toBe(true);
+    expect(chip.hasAttribute("data-on")).toBe(true);
+    expect(chip.style.backgroundColor).toBe(asRgb(LIVE));
+    expect(chip.style.backgroundColor).not.toBe(asRgb(ACCENT));
+
+    const badge = chip.querySelector<HTMLElement>(`[${NS}-badge]`)!;
+    expect(badge.textContent).toBe("1");
+    expect(badge.style.backgroundColor).toBe(asRgb(ACCENT));
+    expect(badge.style.color).toBe(asRgb("#fff"));
+
+    picker.disable();
+
+    expect(chip.style.backgroundColor).toBe(asRgb(CHIP_IDLE));
+    // The count means the same thing in both states, so it looks the same.
+    expect(chip.querySelector<HTMLElement>(`[${NS}-badge]`)!.style.backgroundColor).toBe(
+      asRgb(ACCENT),
+    );
+  });
+
+  it("rings the badge in the chip's own colour, in both states", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const ring = (): string => query(`[${NS}-badge]`)!.style.boxShadow;
+    expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
+
+    picker.disable();
+    expect(ring()).toBe(`0 0 0 2px ${CHIP_IDLE}`);
+
+    picker.enable();
+    expect(ring()).toBe(`0 0 0 2px ${LIVE}`);
+  });
+
+  it("honours a liveColor override without touching the accent", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT, liveColor: "#0f766e" });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    expect(query(`[${NS}-chip]`)!.style.backgroundColor).toBe(asRgb("#0f766e"));
+    expect(query(`[${NS}-badge]`)!.style.backgroundColor).toBe(asRgb(ACCENT));
+    expect(query(`[${NS}-badge]`)!.style.boxShadow).toBe("0 0 0 2px #0f766e");
+  });
+});
+
+/**
+ * The panel parks bottom-right, on top of whatever the user was trying to look
+ * at. Moving it is the fix — by the header only, so the rows underneath keep
+ * behaving like rows.
+ */
+describe("draggable saved-notes panel", () => {
+  it("moves with a drag on its header and remembers where it was put", async () => {
+    const picker = make({ transport: fakeTransport() });
+    expect(picker.active).toBe(false);
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+    expect(header).not.toBeNull();
+
+    dragFrom(header, 200, 200, 320, 290);
+
+    expect(panel.style.left).toBe("120px");
+    expect(panel.style.top).toBe("90px");
+    // `right`/`bottom` from the sheet would fight `left`/`top`.
+    expect(panel.style.right).toBe("auto");
+    expect(panel.style.bottom).toBe("auto");
+
+    // Closing and reopening keeps it where the user put it.
+    query(`[${NS}-chip]`)!.click();
+    const reopened = await openPanel();
+    expect(reopened.style.left).toBe("120px");
+    expect(reopened.style.top).toBe("90px");
+  });
+
+  it("does not drag when the grab starts on a row's delete button", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note about the header");
+    picker.disable();
+    transport.listed.push(transport.created[0]!); // the inbox has it now
+
+    const panel = await openPanel();
+    const del = panel.querySelector<HTMLElement>(`[${NS}-del]`)!;
+    expect(del).not.toBeNull();
+
+    dragFrom(del, 200, 200, 320, 290);
+
+    expect(panel.style.left).toBe("");
+    expect(panel.style.top).toBe("");
+  });
+
+  it("cannot be dragged fully off-screen in any direction", async () => {
+    make({ transport: fakeTransport() });
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+    const width = 320; // the panel's declared width — jsdom lays nothing out
+
+    dragFrom(header, 200, 200, -4000, -4000);
+
+    expect(parseFloat(panel.style.left) + width).toBeGreaterThanOrEqual(48);
+    expect(parseFloat(panel.style.top)).toBeGreaterThanOrEqual(0);
+
+    dragFrom(header, 0, 0, 9999, 9999);
+
+    expect(parseFloat(panel.style.left)).toBeLessThanOrEqual(window.innerWidth - 48);
+    expect(parseFloat(panel.style.top)).toBeLessThanOrEqual(window.innerHeight - 48);
+  });
+
+  it("does not leak the drag into picking or into the page", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+    const reachedPage: string[] = [];
+    for (const type of ["pointerdown", "pointermove", "pointerup", "mousedown", "click"]) {
+      document.body.addEventListener(type, () => reachedPage.push(type));
+    }
+
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+    const down = dragFrom(header, 100, 100, 240, 220);
+
+    // preventDefault on pointerdown is what stops the browser selecting text.
+    expect(down.defaultPrevented).toBe(true);
+    expect(reachedPage).toEqual([]);
+    expect(picker.active).toBe(false);
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
+    expect(query(`[${NS}-pop]`)).toBeNull();
+  });
+
+  it("keeps its position when the panel re-homes into an open modal dialog", async () => {
+    document.body.innerHTML = `<dialog id="modal">m</dialog>`;
+    make({ transport: fakeTransport() });
+    const panel = await openPanel();
+    const header = panel.querySelector<HTMLElement>(`[${NS}-drag]`)!;
+
+    dragFrom(header, 100, 100, 260, 220);
+    expect(panel.style.left).toBe("160px");
+    expect(panel.style.top).toBe("120px");
+
+    query("#modal")!.setAttribute("open", "");
+    await settle();
+
+    const moved = query(`[${NS}-panel]`)!;
+    expect(moved.parentNode).toBe(query("#modal"));
+    expect(moved.style.left).toBe("160px");
+    expect(moved.style.top).toBe("120px");
+  });
 });
