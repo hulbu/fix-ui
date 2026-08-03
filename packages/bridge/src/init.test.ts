@@ -575,30 +575,216 @@ describe("running twice", () => {
   });
 });
 
+// ── workspaces ──────────────────────────────────────────────────────────────
+
+/**
+ * The shape that cost an agent twenty minutes: the dependency landed at the
+ * workspace root, the app is a package below it, and pnpm's isolated
+ * node_modules meant the app's import of the embed did not resolve.
+ */
+describe("a workspace", () => {
+  async function workspaceRoot(): Promise<void> {
+    await write(
+      "package.json",
+      `${JSON.stringify({ name: "root", private: true, scripts: { dev: "turbo dev" } }, undefined, 2)}\n`,
+    );
+    await write("pnpm-workspace.yaml", 'packages:\n  - "website"\n  - "packages/*"\n');
+    await write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+  }
+
+  async function appPackage(dir: string, dep = "next"): Promise<void> {
+    await write(
+      `${dir}/package.json`,
+      `${JSON.stringify(
+        { name: path.basename(dir), scripts: { dev: `${dep} dev` }, dependencies: { [dep]: "1.0.0" } },
+        undefined,
+        2,
+      )}\n`,
+    );
+  }
+
+  it("installs the embed into the package that renders the app", async () => {
+    await workspaceRoot();
+    await appPackage("website");
+    await appPackage("packages/ui-lib", "typescript"); // not an app: no next, no vite
+
+    const result = await init();
+
+    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
+    expect(embed?.cwd).toBe(path.join(project, "website"));
+
+    // The bridge stays at the root: `fixui dev` wraps the root dev script.
+    const bridge = installs.find((plan) => plan.packages["fixui-bridge"] !== undefined);
+    expect(bridge?.cwd).toBe(project);
+    expect(bridge?.packages["@hulbu/fixui"]).toBeUndefined();
+
+    const root = JSON.parse(await read("package.json")) as {
+      devDependencies: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    expect(root.devDependencies["@hulbu/fixui"]).toBeUndefined();
+    expect(root.devDependencies["fixui-bridge"]).toBeDefined();
+    expect(root.scripts.dev).toBe("fixui dev -- turbo dev");
+
+    const app = JSON.parse(await read("website/package.json")) as {
+      devDependencies: Record<string, string>;
+    };
+    expect(app.devDependencies["@hulbu/fixui"]).toBe("@hulbu/fixui");
+    expect(result.changed.join("\n")).toMatch(/website/);
+  });
+
+  it("reads the workspaces field of the root package.json too", async () => {
+    await write(
+      "package.json",
+      `${JSON.stringify({ name: "root", private: true, workspaces: ["apps/*"] }, undefined, 2)}\n`,
+    );
+    await appPackage("apps/storefront", "vite");
+
+    await init();
+
+    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
+    expect(embed?.cwd).toBe(path.join(project, "apps", "storefront"));
+  });
+
+  it("falls back to the root and names the packages when several qualify", async () => {
+    await workspaceRoot();
+    await appPackage("website");
+    await appPackage("packages/admin", "vite");
+
+    const result = await init();
+
+    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
+    expect(embed?.cwd).toBe(project);
+    const said = result.skipped.join("\n");
+    expect(said).toMatch(/website/);
+    expect(said).toMatch(/admin/);
+    expect(said).toMatch(/@hulbu\/fixui/);
+  });
+
+  it("falls back to the root and says so when no package qualifies", async () => {
+    await workspaceRoot();
+    await appPackage("packages/ui-lib", "typescript");
+
+    const result = await init();
+
+    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
+    expect(embed?.cwd).toBe(project);
+    expect(result.skipped.join("\n")).toMatch(/@hulbu\/fixui/);
+  });
+
+  it("changes nothing the second time", async () => {
+    await workspaceRoot();
+    await appPackage("website");
+    await init();
+    const before = await snapshot();
+    installs.length = 0;
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+    expect(installs).toEqual([]);
+  });
+});
+
 // ── local mode ──────────────────────────────────────────────────────────────
 
 describe("--local", () => {
-  it("points the MCP server at the checkout and installs from it", async () => {
+  let local: string;
+
+  /** A checkout that has been through `make package`. */
+  async function packedCheckout(packed = true): Promise<string> {
+    local = await mkdtemp(path.join(tmpdir(), "fixui-repo-"));
+    tempDirs.push(local);
+    if (packed) {
+      await mkdir(path.join(local, "dist"), { recursive: true });
+      for (const name of [
+        "hulbu-fixui-0.0.1.tgz",
+        "hulbu-fixui-core-0.0.1.tgz",
+        "fixui-bridge-0.0.1.tgz",
+      ]) {
+        await writeFile(path.join(local, "dist", name), "");
+      }
+    }
+    return local;
+  }
+
+  it("points the MCP server at the checkout", async () => {
     await viteProject();
-    await write("pnpm-lock.yaml", "");
-    const local = "/abs/path/to/fix-ui";
+    await packedCheckout();
 
     await init({ local, skillSource: await resolveSkillSource() });
 
     expect(JSON.parse(await read(".mcp.json"))).toEqual({
       mcpServers: {
-        fixui: { command: "node", args: [`${local}/packages/bridge/dist/cli.js`] },
+        fixui: { command: "node", args: [path.join(local, "packages/bridge/dist/cli.js")] },
       },
     });
-    expect(installs[0]?.packages["@hulbu/fixui"]).toBe(`link:${local}/packages/embed`);
   });
 
-  it("uses file: for npm", async () => {
+  it("installs the packed tarballs, never a link into another checkout", async () => {
     await viteProject();
-    const local = "/abs/path/to/fix-ui";
+    await write("pnpm-lock.yaml", "");
+    await packedCheckout();
 
     await init({ local, skillSource: await resolveSkillSource() });
 
-    expect(installs[0]?.packages["@hulbu/fixui"]).toBe(`file:${local}/packages/embed`);
+    const specs = installs.flatMap((plan) => Object.values(plan.packages));
+    expect(specs.join(" ")).not.toMatch(/link:|packages\/embed/);
+    expect(specs).toContain(`file:${path.join(local, "dist", "hulbu-fixui-0.0.1.tgz")}`);
+    expect(specs).toContain(`file:${path.join(local, "dist", "fixui-bridge-0.0.1.tgz")}`);
+    // The embed's dependency is unpublished: without the core tarball the
+    // install resolves it from a registry that has never seen it.
+    expect(specs).toContain(`file:${path.join(local, "dist", "hulbu-fixui-core-0.0.1.tgz")}`);
+  });
+
+  it("warns that the entries are machine-local", async () => {
+    await viteProject();
+    await packedCheckout();
+
+    await init({ local, skillSource: await resolveSkillSource() });
+
+    expect(logs.join("\n")).toMatch(/do not commit/i);
+  });
+
+  it("refuses to install when the tarballs are missing, and names the command", async () => {
+    await viteProject();
+    await packedCheckout(false);
+
+    const result = await init({ local, skillSource: await resolveSkillSource() });
+
+    expect(installs).toEqual([]);
+    const said = result.skipped.join("\n");
+    expect(said).toMatch(/make package/);
+    expect(said).toMatch(/dist/);
+    // The rest of the setup still happened.
+    expect(await exists(".mcp.json")).toBe(true);
+  });
+
+  it("changes nothing the second time", async () => {
+    await viteProject();
+    await packedCheckout();
+    await init({ local, skillSource: await resolveSkillSource() });
+    const before = await snapshot();
+
+    const result = await init({ local, skillSource: await resolveSkillSource() });
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+  });
+});
+
+// ── what to do with it ──────────────────────────────────────────────────────
+
+describe("the closing advice", () => {
+  it("says how the tool is actually used, not just what changed", async () => {
+    await viteProject();
+
+    await init();
+
+    const said = logs.join("\n");
+    expect(said).toMatch(/chip/i);
+    expect(said).toMatch(/fix ui/);
+    expect(said).toMatch(/review/i);
   });
 });

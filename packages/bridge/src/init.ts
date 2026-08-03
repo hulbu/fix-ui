@@ -25,12 +25,21 @@ export type PackageManager = "pnpm" | "yarn" | "npm";
 /** The embed (adapters) and the bridge (the `fixui` bin the dev script calls). */
 const EMBED = "@hulbu/fixui";
 const BRIDGE = "fixui-bridge";
+/** The embed's own dependency: only ever named in local mode, where nothing is
+ *  published and a registry cannot resolve it. */
+const CORE = "@hulbu/fixui-core";
 
 /** Next must transpile the embed: it ships raw TypeScript, and without this the
  *  integration fails silently rather than loudly. */
 const TRANSPILE = [EMBED, "@hulbu/fixui-core"];
 
 const IGNORES = [".fix-ui.json", ".fix-ui.jsonl", ".fix-ui.reviews.jsonl"];
+
+/** "a", "a and b", "a, b and c" — a list a person would read aloud. */
+function list(items: string[]): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]!}`;
+}
 
 /** A JS array literal, spaced the way the file it is going into is written. */
 function literal(names: string[]): string {
@@ -165,13 +174,40 @@ function installArgv(manager: PackageManager, specs: string[]): string[] {
   return ["npm", "install", "--save-dev", ...specs];
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** `@hulbu/fixui` → `hulbu-fixui`, the way a packed tarball is named. */
+function slug(name: string): string {
+  return name.replace(/^@/, "").replace(/\//g, "-");
+}
+
 /**
- * A local checkout is referenced, never copied: `link:` for pnpm (which
- * symlinks, so the checkout's own `workspace:` dependencies still resolve) and
- * `file:` for npm and yarn.
+ * The tarballs `make package` writes into `<repo>/dist`, as install specifiers.
+ *
+ * A local checkout is *copied in*, never linked. `link:`/`file:` at a directory
+ * points node_modules outside the project tree, and every bundler with a
+ * compile root (Turbopack, Vite's `fs.allow`) then refuses the import — first in
+ * dev, then again in the production build. A tarball is extracted into
+ * node_modules like any other package, so none of that arises. `undefined`
+ * means the checkout has not been packed, which is reported, never worked
+ * around: falling back to a link would trade a clear error for a confusing one.
  */
-function localSpec(manager: PackageManager, dir: string): string {
-  return `${manager === "pnpm" ? "link" : "file"}:${dir}`;
+async function resolveTarballs(repo: string): Promise<Record<string, string> | undefined> {
+  const dist = path.join(repo, "dist");
+  const entries = await readdir(dist).catch(() => [] as string[]);
+  const found: Record<string, string> = {};
+  for (const name of [CORE, EMBED, BRIDGE]) {
+    // `-<digit>` is what separates the name from the version: it is the only
+    // thing telling `hulbu-fixui-0.0.1.tgz` from `hulbu-fixui-core-0.0.1.tgz`.
+    const pattern = new RegExp(`^${escapeRegExp(slug(name))}-\\d[^\\s]*\\.tgz$`);
+    const match = entries.filter((entry) => pattern.test(entry)).sort();
+    const newest = match[match.length - 1];
+    if (newest === undefined) return undefined;
+    found[name] = `file:${path.join(dist, newest)}`;
+  }
+  return found;
 }
 
 /** The real installer: the package manager, wearing our stdio. */
@@ -186,6 +222,168 @@ const shellInstall: Installer = async (plan) =>
     child.once("error", () => resolve(false));
     child.once("exit", (code) => resolve(code === 0));
   });
+
+// ── workspaces ──────────────────────────────────────────────────────────────
+
+/**
+ * The globs a monorepo root declares, or `undefined` if this is not a
+ * workspace. Both declarations are read: pnpm's own file, and the `workspaces`
+ * field npm and yarn use.
+ */
+async function workspaceGlobs(
+  project: string,
+  manifest: Manifest | undefined,
+): Promise<string[] | undefined> {
+  const yaml = await readText(path.join(project, "pnpm-workspace.yaml"));
+  if (yaml !== undefined) {
+    const globs = yamlPackages(yaml);
+    if (globs.length > 0) return globs;
+  }
+  const field = manifest?.workspaces as string[] | { packages?: string[] } | undefined;
+  const globs = Array.isArray(field) ? field : field?.packages;
+  return globs === undefined || globs.length === 0 ? undefined : globs;
+}
+
+/**
+ * The `packages:` list out of pnpm-workspace.yaml, by hand: the file is a
+ * two-level document written by people, and a YAML parser is a dependency this
+ * one list does not justify. Anything unrecognised yields no globs, which reads
+ * downstream as "not a workspace" — the pre-existing behaviour.
+ */
+function yamlPackages(source: string): string[] {
+  const globs: string[] = [];
+  let inside = false;
+  for (const line of source.split("\n")) {
+    const key = /^([\w-]+)\s*:/.exec(line);
+    if (key !== null) {
+      inside = key[1] === "packages";
+      continue;
+    }
+    const item = /^\s*-\s*(.+?)\s*$/.exec(line);
+    if (!inside || item === null) continue;
+    const value = item[1]!.replace(/\s+#.*$/, "").replace(/^["']|["']$/g, "");
+    if (value !== "") globs.push(value);
+  }
+  return globs;
+}
+
+const NEVER_WALK = new Set(["node_modules", ".git", "dist", "build"]);
+
+/** Every directory under `dir`, itself included, minus the ones nothing lives in. */
+async function descend(dir: string, depth = 4): Promise<string[]> {
+  const out = [dir];
+  if (depth === 0) return out;
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || NEVER_WALK.has(entry.name)) continue;
+    out.push(...(await descend(path.join(dir, entry.name), depth - 1)));
+  }
+  return out;
+}
+
+/** The directories a workspace glob names. `*` matches within one segment. */
+async function expandGlob(root: string, pattern: string): Promise<string[]> {
+  const segments = pattern.split("/").filter((segment) => segment !== "" && segment !== ".");
+  let dirs = [root];
+  for (const segment of segments) {
+    const next: string[] = [];
+    for (const dir of dirs) {
+      if (segment === "**") {
+        next.push(...(await descend(dir)));
+      } else if (!segment.includes("*")) {
+        next.push(path.join(dir, segment));
+      } else {
+        const test = new RegExp(`^${segment.split("*").map(escapeRegExp).join("[^/]*")}$`);
+        for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+          if (entry.isDirectory() && !NEVER_WALK.has(entry.name) && test.test(entry.name)) {
+            next.push(path.join(dir, entry.name));
+          }
+        }
+      }
+    }
+    dirs = next;
+  }
+  return dirs;
+}
+
+/**
+ * The workspace packages that render an app — the ones whose package.json has
+ * `next` or `vite`, because those are the packages that will import the embed.
+ * The dependency has to live in *that* package: with pnpm's isolated
+ * node_modules a root-level install is simply not on the app's resolution path.
+ */
+async function findAppPackages(
+  project: string,
+  globs: string[],
+): Promise<{ dir: string; name: string }[]> {
+  const seen = new Set<string>();
+  const found: { dir: string; name: string }[] = [];
+  for (const glob of globs) {
+    if (glob.startsWith("!")) continue; // an exclusion; we are not enumerating exhaustively
+    for (const dir of await expandGlob(project, glob)) {
+      if (dir === project || seen.has(dir)) continue;
+      seen.add(dir);
+      const manifest = await reparse(path.join(dir, "package.json"));
+      if (manifest === undefined) continue;
+      const deps = { ...manifest.dependencies, ...manifest.devDependencies };
+      if (deps.next === undefined && deps.vite === undefined) continue;
+      const name = typeof manifest.name === "string" ? manifest.name : path.relative(project, dir);
+      found.push({ dir, name });
+    }
+  }
+  return found.sort((a, b) => a.dir.localeCompare(b.dir));
+}
+
+// ── adding the dependencies ─────────────────────────────────────────────────
+
+interface AddOptions {
+  /** The package to install into — a workspace member, or the project root. */
+  dir: string;
+  /** The manifest of `dir`, as last read. */
+  manifest: Manifest;
+  /** name → specifier. Already-present names are dropped, so a rerun is a no-op. */
+  wanted: Record<string, string>;
+  manager: PackageManager;
+  install: Installer;
+  /** How to name this package in a sentence: "" for the root, " in website". */
+  where: string;
+  /** What a person would have to type first to be in `dir`. */
+  prefix: string;
+  changed: string[];
+  skipped: string[];
+}
+
+/** Installs what is missing, and returns the manifest as it is on disk after. */
+async function addDependencies(options: AddOptions): Promise<Manifest> {
+  const { dir, wanted, manager, install, where, prefix, changed, skipped } = options;
+  let manifest = options.manifest;
+  const present = { ...manifest.dependencies, ...manifest.devDependencies };
+  const packages = Object.fromEntries(
+    Object.entries(wanted).filter(([name]) => present[name] === undefined),
+  );
+  if (Object.keys(packages).length === 0) return manifest;
+
+  const command = installArgv(manager, Object.values(packages));
+  const exitedOk = await install({ manager, command, packages, cwd: dir });
+
+  // Whatever the exit code said, package.json on disk is now the package
+  // manager's, not ours: re-read it, or the dev-script edit below would
+  // stringify a stale object over the dependencies it just added.
+  manifest = (await reparse(path.join(dir, "package.json"))) ?? manifest;
+
+  const now = { ...manifest.dependencies, ...manifest.devDependencies };
+  const landed = Object.keys(packages).filter((name) => now[name] !== undefined);
+  if (landed.length === Object.keys(packages).length) {
+    changed.push(`installed ${list(landed)}${where} (${manager})`);
+  } else {
+    // The manifest, not the exit code, is the truth here: pnpm exits
+    // non-zero on things like ignored build scripts having installed fine.
+    skipped.push(
+      `the install ${exitedOk ? "did not add the package" : "failed"}${where} — run it yourself:` +
+        `\n    ${prefix}${command.join(" ")}`,
+    );
+  }
+  return manifest;
+}
 
 // ── source edits: shared string surgery ─────────────────────────────────────
 
@@ -351,6 +549,17 @@ const ADAPTER_TABLE = [
   "  anything else       call initFixUi() from \"@hulbu/fixui\" in a dev-only entry point",
 ].join("\n");
 
+/** What the thing does, once it is wired — the part a link would not tell you. */
+const HOW_TO_USE = [
+  "How to use it:",
+  "  1. with the dev server running, press the fix-ui chip and point at what is wrong",
+  "  2. type what should change, and send it",
+  "  3. tell your agent `fix ui` — it reads your notes and works through them",
+  "",
+  "  Your agent can also ask you to check its own work: a review banner appears on",
+  "  the page, and each answer goes straight back to it.",
+].join("\n");
+
 // ── the command ─────────────────────────────────────────────────────────────
 
 interface Manifest {
@@ -418,42 +627,72 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
 
   const manager = await detectManager(project);
 
-  // ── 1. the devDependency ──────────────────────────────────────────────────
+  // ── 1. the devDependencies ────────────────────────────────────────────────
   // First, because the package manager rewrites package.json and would drop the
   // dev-script edit if it ran after it.
-  if (manifest !== undefined) {
-    const present = { ...manifest.dependencies, ...manifest.devDependencies };
-    const wanted =
-      local === undefined
-        ? { [EMBED]: EMBED, [BRIDGE]: BRIDGE }
-        : {
-            [EMBED]: localSpec(manager, path.join(local, "packages", "embed")),
-            [BRIDGE]: localSpec(manager, path.join(local, "packages", "bridge")),
-          };
-    const packages = Object.fromEntries(
-      Object.entries(wanted).filter(([name]) => present[name] === undefined),
+  //
+  // Two packages, two homes. The embed is imported by the app, so it belongs to
+  // the package that renders the app. The bridge is run by `fixui dev`, which
+  // wraps the root dev script, so it belongs at the root.
+  const tarballs = local === undefined ? undefined : await resolveTarballs(local);
+  if (local !== undefined && tarballs === undefined) {
+    skipped.push(
+      `no packed tarballs in ${path.join(local, "dist")} — run \`make package\` there first,` +
+        " then rerun this command. init will not fall back to a link: into that checkout:" +
+        " it resolves outside this project's tree, which breaks the production build" +
+        " and cannot be installed on CI",
     );
+  }
 
-    if (Object.keys(packages).length > 0) {
-      const command = installArgv(manager, Object.values(packages));
-      const exitedOk = await install({ manager, command, packages, cwd: project });
+  if (manifest !== undefined && (local === undefined || tarballs !== undefined)) {
+    const embedWanted: Record<string, string> =
+      tarballs === undefined
+        ? { [EMBED]: EMBED }
+        : { [CORE]: tarballs[CORE]!, [EMBED]: tarballs[EMBED]! };
+    const bridgeWanted = { [BRIDGE]: tarballs === undefined ? BRIDGE : tarballs[BRIDGE]! };
 
-      // Whatever the exit code said, package.json on disk is now the package
-      // manager's, not ours: re-read it, or the dev-script edit below would
-      // stringify a stale object over the dependencies it just added.
-      manifest = (await reparse(manifestFile)) ?? manifest;
+    const globs = await workspaceGlobs(project, manifest);
+    const apps = globs === undefined ? [] : await findAppPackages(project, globs);
+    const app = globs !== undefined && apps.length === 1 ? apps[0]! : undefined;
 
-      const now = { ...manifest.dependencies, ...manifest.devDependencies };
-      const landed = Object.keys(packages).filter((name) => now[name] !== undefined);
-      if (landed.length === Object.keys(packages).length) {
-        changed.push(`installed ${landed.join(" and ")} (${manager})`);
-      } else {
-        // The manifest, not the exit code, is the truth here: pnpm exits
-        // non-zero on things like ignored build scripts having installed fine.
-        skipped.push(
-          `the install ${exitedOk ? "did not add the package" : "failed"} — run it yourself:` +
-            `\n    ${command.join(" ")}`,
-        );
+    if (globs !== undefined && app === undefined) {
+      // Guessing which package imports the embed is worse than saying we did not.
+      skipped.push(
+        (apps.length === 0
+          ? "this is a workspace and no package depends on next or vite, so"
+          : `this is a workspace and ${list(apps.map((one) => one.name))} could each be the app, so`) +
+          ` ${EMBED} went in at the root — add it to the package that renders your app` +
+          " as well, or its import will not resolve there",
+      );
+    }
+
+    manifest = await addDependencies({
+      dir: project,
+      manifest,
+      wanted: app === undefined ? { ...embedWanted, ...bridgeWanted } : bridgeWanted,
+      manager,
+      install,
+      where: "",
+      prefix: "",
+      changed,
+      skipped,
+    });
+
+    if (app !== undefined) {
+      const appManifest = await reparse(path.join(app.dir, "package.json"));
+      const relative = path.relative(project, app.dir);
+      if (appManifest !== undefined) {
+        await addDependencies({
+          dir: app.dir,
+          manifest: appManifest,
+          wanted: embedWanted,
+          manager,
+          install,
+          where: ` in ${app.name}`,
+          prefix: `cd ${relative} && `,
+          changed,
+          skipped,
+        });
       }
     }
   }
@@ -616,6 +855,15 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
 
   log(changed.length === 0 ? "fixui init: already set up — nothing to change." : "fixui init changed:");
   for (const line of changed) log(`  ✓ ${line}`);
+  if (tarballs !== undefined) {
+    // Said on every run, not just the one that installed: it is a property of
+    // what package.json now says, and that outlives this command.
+    log(
+      `\nLocal install: the ${EMBED} and ${BRIDGE} entries point at tarballs in` +
+        ` ${path.join(local!, "dist")}. Those paths only exist on this machine —` +
+        " do not commit them, and repack after changing fix-ui.",
+    );
+  }
   if (skipped.length > 0) {
     log("\nskipped (do these by hand):");
     for (const line of skipped) log(`  • ${line}`);
@@ -627,6 +875,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         ADAPTER_TABLE,
     );
   }
+  log(`\n${HOW_TO_USE}`);
   log(`\nNext: ${nextStep}`);
 
   return { stack, manager, changed, skipped, nextStep };
