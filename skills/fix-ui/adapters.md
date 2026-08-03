@@ -1,0 +1,106 @@
+# Wiring fix-ui into an app
+
+Two edits. Both use code we ship — **never write your own integration.**
+
+## Edit 1 — the bridge's lifetime (every stack)
+
+In `package.json`, wrap the dev script:
+
+```json
+"dev": "fixui dev -- next dev"
+```
+
+`fixui dev` starts the bridge on a free port, writes `.fix-ui.json` (port + token), runs your dev command, and stops the bridge when it exits. Without this there is no bridge, and notes queue in the browser instead of reaching the inbox.
+
+Already wrapped? Leave it.
+
+## Edit 2 — put the picker on the page
+
+Pick the row that matches. Insert exactly the line shown.
+
+### Next, app router
+
+In `app/layout.tsx` (or `src/app/layout.tsx`), inside `<body>`:
+
+```tsx
+import { FixUiScript } from "@hulbu/fixui/next";
+// …
+<body>
+  {children}
+  <FixUiScript />
+</body>
+```
+
+**Also required** — `next.config.*`, or the import fails inside `node_modules`:
+
+```ts
+transpilePackages: ["@hulbu/fixui", "@hulbu/fixui-core"]
+```
+
+`FixUiScript` is a server component: it reads `.fix-ui.json` and hands the port and token to the browser, so nothing is configured by hand. It returns `null` in a production build.
+
+### Next, pages router
+
+In `pages/_app.tsx`:
+
+```tsx
+import { FixUi } from "@hulbu/fixui/react";
+// inside the returned tree:
+<FixUi />
+```
+
+Same `transpilePackages` requirement. This variant can't read the discovery file (it's a client component), so pass the bridge explicitly if the defaults don't find it.
+
+### Vite, Astro, SvelteKit
+
+In `vite.config.*`:
+
+```ts
+import { fixui } from "@hulbu/fixui/vite";
+export default defineConfig({ plugins: [fixui()] });
+```
+
+Serve-only — it adds nothing to a production build.
+
+### Plain HTML, no bundler
+
+```html
+<script src="node_modules/@hulbu/fixui/dist/fixui.global.js"
+        data-port="3499" data-token="…"></script>
+```
+
+Read the port and token out of `.fix-ui.json` and inline them. This is the one case with no automatic discovery, because nothing on the server side is rendering the page.
+
+### Anything else
+
+Call `initFixUi()` from a dev-only entry point:
+
+```ts
+if (import.meta.env?.DEV) {
+  const { initFixUi } = await import("@hulbu/fixui");
+  initFixUi({ label: "my app" });
+}
+```
+
+## Then verify — this step is not optional
+
+Editing the files is not evidence. Load the page and confirm the picker is actually there:
+
+```
+the chip is visible bottom-right, and `document.querySelector("[data-uifb-chip]")` is not null
+```
+
+If the chip is missing, work through these in order:
+
+| Symptom | Cause |
+|---|---|
+| No chip at all | The adapter line isn't rendering — wrong file, or outside `<body>` |
+| Module not found under `node_modules` | `transpilePackages` missing (Next) |
+| Chip present, notes never arrive | Dev server isn't running under `fixui dev` — no bridge, so notes queue |
+| Chip present, badge counts up, inbox empty | Same as above; the notes are safe and flush when a bridge appears |
+
+Report the integration done only after you have seen the chip.
+
+## Multiple apps at once
+
+Give each one a label — `<FixUiScript label="admin" />`, `fixui({ label: "storefront" })`. The label appears in `list_surfaces`, so a review can be aimed at one specific page.

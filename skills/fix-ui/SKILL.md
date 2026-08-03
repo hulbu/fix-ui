@@ -15,6 +15,20 @@ ask for eyes before claiming it works.
 cannot see the page. `request_review` is how you borrow their eyes, and it is the
 only thing that closes the loop.
 
+## First run: is the picker wired in?
+
+If the project has no `.fix-ui.json` and no adapter in its source, the picker
+isn't installed yet. Wire it before anything else — see
+[adapters.md](adapters.md). Two edits, both using shipped code: wrap the dev
+script with `fixui dev`, and add the one adapter line for that stack.
+
+**Never write your own integration.** Pick the row that matches the stack and
+insert exactly the documented line. If no row matches, use `initFixUi()` from a
+dev entry point rather than inventing something.
+
+Then load the page and confirm the chip exists. Reporting the integration done
+from the edit alone is the same defect as resolving an entry you did not fix.
+
 ## The inbox loop
 
 1. `list_feedback()` — or read `.fix-ui.jsonl` directly; the file is the contract.
