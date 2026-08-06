@@ -4,10 +4,10 @@ packages:
   - "e2e"
 
 # One package at a time for `pnpm -r <script>`. The e2e suite builds
-# `packages/bridge/dist` before it spawns the daemon, and so does the bridge's
-# own vitest setup — two `tsc` runs writing that directory at once can hand a
-# spawned node a half-written file. The whole repo's tests take seconds; the
-# determinism is worth more than the parallelism.
+# `packages/fixui/dist` before it spawns the daemon, and so does the package's
+# own vitest global setup — two `tsc` runs writing that directory at once can
+# hand a spawned node a half-written file. The whole repo's tests take seconds;
+# the determinism is worth more than the parallelism.
 workspaceConcurrency: 1
 
 allowBuilds:
