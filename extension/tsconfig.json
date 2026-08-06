@@ -2,7 +2,13 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["chrome"]
+    "types": ["chrome"],
+    // `@hulbu/fixui-core` now resolves through its `exports` to a built
+    // `.d.ts`. This package emits nothing, so it reads core's source directly
+    // rather than making a typecheck on a fresh clone depend on core's build.
+    "paths": {
+      "@hulbu/fixui-core": ["../packages/core/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts", "vitest.config.ts"]
 }

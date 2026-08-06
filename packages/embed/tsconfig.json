@@ -1,8 +1,23 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": true,
+    // The maps carry their own sources, so the tarball ships `dist` and nothing
+    // else: a stack trace resolves without `src` being published alongside it.
+    "inlineSources": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  // Emitting is the only thing this config is for, so it resolves
+  // `@hulbu/fixui-core` the way a consumer will: through the package's exports,
+  // at its built `.d.ts`. That makes core's build a prerequisite of this one
+  // (`pnpm -r build` orders them), and it keeps the emitted declarations free of
+  // relative paths reaching out of this package.
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  // `global.ts` is not a module entry point — it is the source esbuild bundles
+  // into the standalone `dist/fixui.global.js` for the plain-HTML adapter. tsc
+  // compiling it too would put a second, self-executing `dist/global.js` in the
+  // tarball that nothing can reach through `exports`.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/global.ts"]
 }

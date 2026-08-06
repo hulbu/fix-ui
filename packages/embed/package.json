@@ -2,17 +2,62 @@
   "name": "@hulbu/fixui",
   "version": "0.0.1",
   "description": "Point at any UI element in your running app and leave a note for your coding agent.",
+  "keywords": [
+    "fix-ui",
+    "feedback",
+    "element-picker",
+    "devtools",
+    "next",
+    "vite",
+    "react",
+    "ai-agent",
+    "coding-agent"
+  ],
+  "homepage": "https://github.com/hulbu/fix-ui#readme",
+  "bugs": {
+    "url": "https://github.com/hulbu/fix-ui/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hulbu/fix-ui.git",
+    "directory": "packages/embed"
+  },
   "license": "MIT",
   "type": "module",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./react": "./src/react.tsx",
-    "./next": "./src/next.tsx",
-    "./vite": "./src/vite.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "default": "./dist/next.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "default": "./dist/vite.js"
+    },
+    "./dist/fixui.global.js": "./dist/fixui.global.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "build": "esbuild src/global.ts --bundle --format=iife --platform=browser --target=chrome116,firefox115,safari16 --legal-comments=none --outfile=dist/fixui.global.js",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json && pnpm run build:global",
+    "build:global": "esbuild src/global.ts --bundle --format=iife --platform=browser --target=chrome116,firefox115,safari16 --legal-comments=none --outfile=dist/fixui.global.js",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run"
   },
   "dependencies": {

@@ -2,13 +2,46 @@
   "name": "@hulbu/fixui-core",
   "version": "0.0.1",
   "description": "Point at any UI element in your running app and leave a note for your coding agent.",
+  "keywords": [
+    "fix-ui",
+    "feedback",
+    "element-picker",
+    "devtools",
+    "ai-agent",
+    "coding-agent"
+  ],
+  "homepage": "https://github.com/hulbu/fix-ui#readme",
+  "bugs": {
+    "url": "https://github.com/hulbu/fix-ui/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hulbu/fix-ui.git",
+    "directory": "packages/core"
+  },
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run"
   },
   "devDependencies": {

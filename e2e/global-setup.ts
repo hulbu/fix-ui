@@ -9,6 +9,10 @@ import { build } from "esbuild";
  * green run says nothing about the code in the working tree:
  *
  *   - `packages/bridge/dist/cli.js`, the daemon every spec spawns,
+ *   - `packages/core/dist` and `packages/embed/dist`, because both packages now
+ *     resolve through their `exports` to built JavaScript — so the fixture
+ *     bundle below is built from the artefact that would be published, not from
+ *     a TypeScript source tree no consumer ever sees,
  *   - `extension/dist/*`, loaded unpacked by the extension spec,
  *   - `fixtures/fixui.js`, an IIFE bundle of the npm embed (`@hulbu/fixui`),
  *     because a fixture page is a plain `<script src>` with no bundler, and
@@ -27,6 +31,10 @@ async function buildWorkspacePackages(): Promise<void> {
   // `pnpm --filter` from the repo root, so this works however the suite was
   // invoked (`pnpm --filter e2e test`, `playwright test`, an IDE runner).
   await run("pnpm", ["--filter", "fixui-bridge", "build"], { cwd: repoRoot });
+  // Core before embed, and both before the extension: the embed's build reads
+  // core's emitted `.d.ts`, and the extension bundles core's emitted JS.
+  await run("pnpm", ["--filter", "@hulbu/fixui-core", "build"], { cwd: repoRoot });
+  await run("pnpm", ["--filter", "@hulbu/fixui", "build"], { cwd: repoRoot });
   await run("pnpm", ["--filter", "fix-ui-extension", "build"], { cwd: repoRoot });
 }
 
