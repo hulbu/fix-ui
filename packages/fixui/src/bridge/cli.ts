@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * `fixui-bridge` — one command, two roles, decided by how the process starts.
+ * `fixui` — one command, two roles, decided by how the process starts.
  *
- * - **Owner** (`fixui-bridge dev -- <your dev command>`): binds a port,
+ * - **Owner** (`fixui dev -- <your dev command>`): binds a port,
  *   publishes `.fix-ui.json`, runs the dev command as its child and dies with
  *   it (dev.ts). The dev server owns the bridge's lifetime, so the sink is up
  *   exactly when the app is.
@@ -24,7 +24,7 @@
  * **stdout belongs to the MCP transport.** Whenever MCP is wired up, every log
  * goes to stderr; one stray byte on stdout corrupts the client's JSON-RPC
  * framing. Whether MCP is wired at all is decided by a heuristic: a harness
- * hands this process a pipe on stdin, a human running `fixui-bridge` in a
+ * hands this process a pipe on stdin, a human running `fixui` in a
  * terminal has a TTY.
  */
 import { randomBytes } from "node:crypto";
@@ -271,9 +271,9 @@ async function main(): Promise<void> {
   const owner = await findOwner(project, explicitPort, process.env);
   console.error(
     owner === undefined
-      ? `fixui-bridge: ${NO_BRIDGE} — serving MCP anyway, and looking again on every call` +
+      ? `fixui: ${NO_BRIDGE} — serving MCP anyway, and looking again on every call` +
           ` (project ${project})`
-      : `fixui-bridge serving MCP as a proxy to http://${HOST}:${owner.port} (project ${project})`,
+      : `fixui serving MCP as a proxy to http://${HOST}:${owner.port} (project ${project})`,
   );
 
   // Even with no bridge in sight the tools are served: the agent must hear the
@@ -287,7 +287,7 @@ main().catch((cause: unknown) => {
   console.error(
     cause instanceof UsageError
       ? cause.message
-      : `fixui-bridge failed to start: ${cause instanceof Error ? cause.message : String(cause)}`,
+      : `fixui failed to start: ${cause instanceof Error ? cause.message : String(cause)}`,
   );
   process.exitCode = 1;
 });

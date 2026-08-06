@@ -104,7 +104,7 @@ export async function removeDiscovery(dir: string): Promise<void> {
   await unlink(discoveryPath(dir)).catch(() => undefined);
 }
 
-/** Is a fixui-bridge answering on this port *right now*? The identity check is
+/** Is a bridge of ours answering on this port *right now*? The identity check is
  *  the point: an ephemeral port is recycled, and the next holder is a stranger
  *  we must never proxy an agent's calls to. */
 export async function liveBridge(port: number): Promise<boolean> {

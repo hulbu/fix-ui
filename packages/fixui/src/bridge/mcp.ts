@@ -362,7 +362,7 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
 }
 
 /**
- * Proxy mode: another fixui-bridge owns the port, so the tools become HTTP
+ * Proxy mode: another fixui owns the port, so the tools become HTTP
  * calls against it — scoped to *this* process's project, not the daemon's.
  *
  * `node:http` rather than `fetch`: global fetch dies on a held response after

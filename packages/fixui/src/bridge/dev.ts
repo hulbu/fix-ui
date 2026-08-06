@@ -30,7 +30,7 @@ export interface OwnerOptions {
   token: string;
   /**
    * The dev command and its arguments. Absent → a bare bridge that serves HTTP
-   * until it is signalled (`fixui-bridge` typed into a terminal), which is the
+   * until it is signalled (`fixui` typed into a terminal), which is the
    * same lifetime story with the terminal itself playing the child.
    */
   command?: string[];
@@ -60,9 +60,9 @@ export async function runOwner(options: OwnerOptions): Promise<number> {
     throw cause;
   }
 
-  log(`fixui-bridge listening on http://${HOST}:${server.port} (project ${project})`);
+  log(`fixui listening on http://${HOST}:${server.port} (project ${project})`);
   log(
-    `fixui-bridge published ${path.join(project, DISCOVERY_FILE)}` +
+    `fixui published ${path.join(project, DISCOVERY_FILE)}` +
       " — adapters and the agent's MCP server read the port and token from there",
   );
 
@@ -90,7 +90,7 @@ export async function runOwner(options: OwnerOptions): Promise<number> {
   }
 }
 
-/** A bare `fixui-bridge`: nothing to outlive, so it runs until the terminal
+/** A bare `fixui`: nothing to outlive, so it runs until the terminal
  *  ends it. */
 function untilSignalled(): Promise<number> {
   let end: (code: number) => void = () => undefined;

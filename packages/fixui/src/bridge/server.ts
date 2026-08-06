@@ -397,7 +397,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     if (!loopbackHost(req)) {
       return sendJson(res, 403, {
         ok: false,
-        error: "fixui-bridge serves 127.0.0.1 and localhost only",
+        error: "fixui serves 127.0.0.1 and localhost only",
       });
     }
     if (req.method === "OPTIONS") {
@@ -558,7 +558,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   /**
    * The agent's half: held open, answered only when the review resolves.
    *
-   * Deliberately NOT token-gated. A proxy instance (a second `fixui-bridge` in
+   * Deliberately NOT token-gated. A proxy instance (a second `fixui` in
    * another project's cwd) posts here, and it has no way to read the daemon's
    * token file — gating this route would break the one-daemon-many-projects
    * shape for no gain: without `/events` an attacker can create a review but
@@ -646,6 +646,11 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   });
 
   api.route("GET", "/healthz", (ctx) => {
+    // `fixui-bridge` is the daemon's *wire* identity, not the package name:
+    // discovery.ts, the Chrome extension and the e2e helpers all use it to
+    // tell one of ours from a stranger recycled onto the same port. It stayed
+    // put when the three packages became one, because renaming it would make
+    // an old adapter and a new daemon refuse to recognise each other.
     ctx.json(200, { ok: true, name: "fixui-bridge", version: packageVersion() });
   });
 
