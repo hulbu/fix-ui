@@ -2,7 +2,7 @@
  * Reading `.fix-ui.json` from the *other* side — the adapters that put the
  * picker into a page.
  *
- * The bridge writes this file (`packages/bridge/src/discovery.ts`); everything
+ * The bridge writes this file (`src/bridge/discovery.ts`); everything
  * here reads it. The shape is duplicated rather than imported on purpose: the
  * embed is a browser package with zero runtime dependencies, and a `next`
  * adapter that dragged the daemon into an app's `node_modules` would be a much
@@ -17,7 +17,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
-/** Mirrors `Discovery` in packages/bridge/src/discovery.ts. */
+/** Mirrors `Discovery` in src/bridge/discovery.ts. */
 export interface Discovery {
   v: 1;
   port: number;

@@ -1,4 +1,4 @@
-import type { Picker } from "@hulbu/fixui";
+import type { Picker } from "fixui";
 
 declare global {
   interface Window {

@@ -10,9 +10,6 @@ importers:
 
   e2e:
     devDependencies:
-      '@hulbu/fixui':
-        specifier: workspace:*
-        version: link:../packages/embed
       '@playwright/test':
         specifier: ^1.56.0
         version: 1.62.1
@@ -31,6 +28,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
+      fixui:
+        specifier: workspace:*
+        version: link:../packages/fixui
       react:
         specifier: ^19.2.8
         version: 19.2.8
@@ -42,10 +42,6 @@ importers:
         version: 5.9.3
 
   extension:
-    dependencies:
-      '@hulbu/fixui-core':
-        specifier: workspace:*
-        version: link:../packages/core
     devDependencies:
       '@types/chrome':
         specifier: ^0.1.0
@@ -60,39 +56,11 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@22.20.1)(jsdom@26.1.0)
 
-  packages/bridge:
+  packages/fixui:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.30.0(zod@4.4.3)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.10.0
-        version: 22.20.1
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.7(@types/node@22.20.1)(jsdom@26.1.0)
-
-  packages/core:
-    devDependencies:
-      jsdom:
-        specifier: ^26.0.0
-        version: 26.1.0
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.7(@types/node@22.20.1)(jsdom@26.1.0)
-
-  packages/embed:
-    dependencies:
-      '@hulbu/fixui-core':
-        specifier: workspace:*
-        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

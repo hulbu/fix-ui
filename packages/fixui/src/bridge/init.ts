@@ -22,23 +22,24 @@ import { fileURLToPath } from "node:url";
 export type Stack = "next-app" | "next-pages" | "vite" | "unknown";
 export type PackageManager = "pnpm" | "yarn" | "npm";
 
-/** The embed (adapters) and the bridge (the `fixui` bin the dev script calls). */
-const EMBED = "@hulbu/fixui";
-const BRIDGE = "fixui-bridge";
-/** The embed's own dependency: only ever named in local mode, where nothing is
- *  published and a registry cannot resolve it. */
-const CORE = "@hulbu/fixui-core";
+/**
+ * The one package: the adapters the app imports *and* the `fixui` bin the
+ * wrapped dev script calls. One name, so there is no version pin between two
+ * published things that can ever disagree — the failure that made the first
+ * publish uninstallable.
+ */
+const PACKAGE = "fixui";
 
 /**
  * The packages Next is told to transpile.
  *
- * Both now ship compiled ESM with declarations, so this is no longer the load
+ * It ships compiled ESM with declarations, so this is no longer the load
  * bearing thing it once was — it is kept because a *local* install is a tarball
  * of a working tree, and because Next's handling of a dependency it compiles
  * itself is the path this integration has actually been exercised on. Writing it
  * costs an app nothing; discovering it was needed costs an afternoon.
  */
-const TRANSPILE = [EMBED, "@hulbu/fixui-core"];
+const TRANSPILE = [PACKAGE];
 
 const IGNORES = [".fix-ui.json", ".fix-ui.jsonl", ".fix-ui.reviews.jsonl"];
 
@@ -140,21 +141,22 @@ function detectIndent(source: string): string {
 /**
  * The shipped `skills/fix-ui/` directory.
  *
- * It lives inside this package — `packages/bridge/skills/fix-ui` in the repo,
- * `<install>/skills/fix-ui` once npm has unpacked the tarball — so the same
- * `../skills/fix-ui`, relative to this module, finds it in both places whether
- * this file is running as `src/init.ts` or as `dist/init.js`. That is the point:
- * a repo-relative path would resolve to nothing at all for someone who installed
- * from npm, and `init` would silently copy no skill.
+ * It lives at the root of this package — `packages/fixui/skills/fix-ui` in the
+ * repo, `<install>/skills/fix-ui` once npm has unpacked the tarball — and this
+ * module lives one directory below it in both trees (`src/bridge/init.ts`,
+ * `dist/bridge/init.js`). So the same `../../skills/fix-ui`, relative to this
+ * module, finds it in either place. That is the point: a repo-relative path
+ * would resolve to nothing at all for someone who installed from npm, and
+ * `init` would silently copy no skill.
  *
  * `undefined` means we have no skill to copy, which is reported rather than
  * papered over.
  */
 export async function resolveSkillSource(local?: string): Promise<string | undefined> {
-  const here = fileURLToPath(new URL(".", import.meta.url)); // src/ or dist/
+  const here = fileURLToPath(new URL(".", import.meta.url)); // src/bridge/ or dist/bridge/
   const candidates = [
-    ...(local === undefined ? [] : [path.join(local, "packages", "bridge", "skills", "fix-ui")]),
-    path.join(here, "..", "skills", "fix-ui"),
+    ...(local === undefined ? [] : [path.join(local, "packages", "fixui", "skills", "fix-ui")]),
+    path.join(here, "..", "..", "skills", "fix-ui"),
   ];
   for (const candidate of candidates) {
     if (await fileExists(path.join(candidate, "SKILL.md"))) return candidate;
@@ -192,13 +194,13 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** `@hulbu/fixui` → `hulbu-fixui`, the way a packed tarball is named. */
+/** `@scope/name` → `scope-name`, the way a packed tarball is named. */
 function slug(name: string): string {
   return name.replace(/^@/, "").replace(/\//g, "-");
 }
 
 /**
- * The tarballs `make package` writes into `<repo>/dist`, as install specifiers.
+ * The tarball `make package` writes into `<repo>/dist`, as an install specifier.
  *
  * A local checkout is *copied in*, never linked. `link:`/`file:` at a directory
  * points node_modules outside the project tree, and every bundler with a
@@ -212,9 +214,9 @@ async function resolveTarballs(repo: string): Promise<Record<string, string> | u
   const dist = path.join(repo, "dist");
   const entries = await readdir(dist).catch(() => [] as string[]);
   const found: Record<string, string> = {};
-  for (const name of [CORE, EMBED, BRIDGE]) {
-    // `-<digit>` is what separates the name from the version: it is the only
-    // thing telling `hulbu-fixui-0.0.1.tgz` from `hulbu-fixui-core-0.0.1.tgz`.
+  for (const name of [PACKAGE]) {
+    // `-<digit>` is what separates the name from the version, so a neighbouring
+    // `fixui-extension-0.1.0.tgz` could never be mistaken for this one.
     const pattern = new RegExp(`^${escapeRegExp(slug(name))}-\\d[^\\s]*\\.tgz$`);
     const match = entries.filter((entry) => pattern.test(entry)).sort();
     const newest = match[match.length - 1];
@@ -445,7 +447,7 @@ function indentOf(source: string, at: number): string {
 
 // ── source edits: Next ──────────────────────────────────────────────────────
 
-const NEXT_IMPORT = 'import { FixUiScript } from "@hulbu/fixui/next";';
+const NEXT_IMPORT = 'import { FixUiScript } from "fixui/next";';
 
 /**
  * `<FixUiScript />` as the last thing in `<body>`. Exactly one `</body>` is the
@@ -518,7 +520,7 @@ function withTranspilePackages(source: string): string | undefined {
 
 // ── source edits: Vite ──────────────────────────────────────────────────────
 
-const VITE_IMPORT = 'import { fixui } from "@hulbu/fixui/vite";';
+const VITE_IMPORT = 'import { fixui } from "fixui/vite";';
 
 const VITE_CONFIGS = [
   "vite.config.ts",
@@ -553,14 +555,14 @@ function withVitePlugin(source: string): string | undefined {
 // ── the adapter table, for the cases we will not edit ───────────────────────
 
 const ADAPTER_TABLE = [
-  "  Next (app router)   import { FixUiScript } from \"@hulbu/fixui/next\"",
+  "  Next (app router)   import { FixUiScript } from \"fixui/next\"",
   "                      → render <FixUiScript /> last inside <body> in app/layout.tsx",
   "  Next (pages router) the same component",
   "                      → render <FixUiScript /> in pages/_app.tsx",
-  "  Vite                import { fixui } from \"@hulbu/fixui/vite\"",
+  "  Vite                import { fixui } from \"fixui/vite\"",
   "                      → add fixui() to plugins in vite.config.*",
-  "  plain HTML          <script src=\"…/@hulbu/fixui/dist/fixui.global.js\" data-port … data-token …>",
-  "  anything else       call initFixUi() from \"@hulbu/fixui\" in a dev-only entry point",
+  "  plain HTML          <script src=\"…/fixui/dist/fixui.global.js\" data-port … data-token …>",
+  "  anything else       call initFixUi() from \"fixui\" in a dev-only entry point",
 ].join("\n");
 
 /** What the thing does, once it is wired — the part a link would not tell you. */
@@ -634,20 +636,22 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     } catch {
       skipped.push(
         "package.json is not valid JSON — left untouched;" +
-          ` install ${EMBED} and wrap the dev script as \`fixui dev -- <your dev command>\` yourself`,
+          ` install ${PACKAGE} and wrap the dev script as \`fixui dev -- <your dev command>\` yourself`,
       );
     }
   }
 
   const manager = await detectManager(project);
 
-  // ── 1. the devDependencies ────────────────────────────────────────────────
+  // ── 1. the devDependency ──────────────────────────────────────────────────
   // First, because the package manager rewrites package.json and would drop the
   // dev-script edit if it ran after it.
   //
-  // Two packages, two homes. The embed is imported by the app, so it belongs to
-  // the package that renders the app. The bridge is run by `fixui dev`, which
-  // wraps the root dev script, so it belongs at the root.
+  // One package, but in a workspace it can need two homes. The adapters are
+  // imported by the app, so the package has to be on *that* package's
+  // resolution path; the `fixui` bin is called by the root dev script, so it
+  // has to be at the root too. With pnpm's isolated node_modules neither
+  // install covers the other.
   const tarballs = local === undefined ? undefined : await resolveTarballs(local);
   if (local !== undefined && tarballs === undefined) {
     skipped.push(
@@ -659,11 +663,9 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
   }
 
   if (manifest !== undefined && (local === undefined || tarballs !== undefined)) {
-    const embedWanted: Record<string, string> =
-      tarballs === undefined
-        ? { [EMBED]: EMBED }
-        : { [CORE]: tarballs[CORE]!, [EMBED]: tarballs[EMBED]! };
-    const bridgeWanted = { [BRIDGE]: tarballs === undefined ? BRIDGE : tarballs[BRIDGE]! };
+    const wanted: Record<string, string> = {
+      [PACKAGE]: tarballs === undefined ? PACKAGE : tarballs[PACKAGE]!,
+    };
 
     const globs = await workspaceGlobs(project, manifest);
     const apps = globs === undefined ? [] : await findAppPackages(project, globs);
@@ -675,15 +677,17 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         (apps.length === 0
           ? "this is a workspace and no package depends on next or vite, so"
           : `this is a workspace and ${list(apps.map((one) => one.name))} could each be the app, so`) +
-          ` ${EMBED} went in at the root — add it to the package that renders your app` +
+          ` ${PACKAGE} went in at the root only — add it to the package that renders your app` +
           " as well, or its import will not resolve there",
       );
     }
 
+    // The root always: that is where the wrapped `dev` script runs, and the
+    // `fixui` bin has to be findable from there.
     manifest = await addDependencies({
       dir: project,
       manifest,
-      wanted: app === undefined ? { ...embedWanted, ...bridgeWanted } : bridgeWanted,
+      wanted,
       manager,
       install,
       where: "",
@@ -692,6 +696,8 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
       skipped,
     });
 
+    // And the app package as well, when there is exactly one and we are sure
+    // which: that is where `import … from "fixui/next"` is resolved.
     if (app !== undefined) {
       const appManifest = await reparse(path.join(app.dir, "package.json"));
       const relative = path.relative(project, app.dir);
@@ -699,7 +705,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         await addDependencies({
           dir: app.dir,
           manifest: appManifest,
-          wanted: embedWanted,
+          wanted,
           manager,
           install,
           where: ` in ${app.name}`,
@@ -723,8 +729,11 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
   // ── 3. .mcp.json ──────────────────────────────────────────────────────────
   const server =
     local === undefined
-      ? { command: "npx", args: [BRIDGE] }
-      : { command: "node", args: [path.join(local, "packages", "bridge", "dist", "cli.js")] };
+      ? { command: "npx", args: [PACKAGE] }
+      : {
+          command: "node",
+          args: [path.join(local, "packages", "fixui", "dist", "bridge", "cli.js")],
+        };
   const mcpFile = path.join(project, ".mcp.json");
   const mcpRaw = await readText(mcpFile);
   if (mcpRaw === undefined) {
@@ -846,7 +855,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     } else {
       const file = path.join(project, configName);
       const source = await readFile(file, "utf8");
-      if (!source.includes("@hulbu/fixui/vite")) {
+      if (!source.includes("fixui/vite")) {
         const edited = withVitePlugin(source);
         if (edited === undefined) {
           skipped.push(
@@ -873,9 +882,9 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     // Said on every run, not just the one that installed: it is a property of
     // what package.json now says, and that outlives this command.
     log(
-      `\nLocal install: the ${EMBED} and ${BRIDGE} entries point at tarballs in` +
-        ` ${path.join(local!, "dist")}. Those paths only exist on this machine —` +
-        " do not commit them, and repack after changing fix-ui.",
+      `\nLocal install: the ${PACKAGE} entry points at a tarball in` +
+        ` ${path.join(local!, "dist")}. That path only exists on this machine —` +
+        " do not commit it, and repack after changing fix-ui.",
     );
   }
   if (skipped.length > 0) {

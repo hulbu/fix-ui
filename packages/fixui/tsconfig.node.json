@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
     "types": ["node"],
+    "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
     "sourceMap": true,
@@ -12,6 +13,9 @@
     // else: a stack trace resolves without `src` being published alongside it.
     "inlineSources": true
   },
-  "include": ["src/**/*.ts"],
+  // The Node half: the daemon, the MCP server and `fixui init`. It is compiled
+  // under NodeNext with no DOM lib, because its output is run by node directly
+  // (`dist/bridge/cli.js` is the bin) rather than handed to a bundler.
+  "include": ["src/bridge/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
 }

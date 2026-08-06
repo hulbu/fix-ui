@@ -34,8 +34,8 @@ import { createMcpServer, httpTools, inProcessTools, type ReviewTools } from "./
 import { createBridgeServer } from "./server.js";
 import { inboxPath } from "./storage.js";
 
-const packageDir = fileURLToPath(new URL("..", import.meta.url));
-const cliPath = path.join(packageDir, "dist", "cli.js");
+const packageDir = fileURLToPath(new URL("../..", import.meta.url));
+const cliPath = path.join(packageDir, "dist", "bridge", "cli.js");
 
 const clients: Client[] = [];
 const daemons: ChildProcess[] = [];

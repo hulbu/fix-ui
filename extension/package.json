@@ -10,9 +10,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@hulbu/fixui-core": "workspace:*"
-  },
   "devDependencies": {
     "@types/chrome": "^0.1.0",
     "esbuild": "^0.28.0",

@@ -4,12 +4,11 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "types": ["node", "chrome"],
-    // `@hulbu/fixui` now resolves through its `exports` to a built `.d.ts`.
-    // The suite builds the package before it runs, but a typecheck should not
-    // need a build artifact to exist, so it reads the embed's source directly.
+    // `fixui` resolves through its `exports` to a built `.d.ts`. The suite
+    // builds the package before it runs, but a typecheck should not need a
+    // build artifact to exist, so it reads the embed's source directly.
     "paths": {
-      "@hulbu/fixui": ["../packages/embed/src/index.ts"],
-      "@hulbu/fixui-core": ["../packages/core/src/index.ts"]
+      "fixui": ["../packages/fixui/src/embed/index.ts"]
     }
   },
   "include": ["*.ts", "helpers/**/*.ts", "tests/**/*.ts", "fixtures/src/**/*.ts", "fixtures/src/**/*.tsx"]

@@ -226,7 +226,7 @@ function fail(res: ServerResponse, cause: unknown): void {
 
 const INVALID_PROJECT = "project must be an absolute path to an existing directory";
 
-/** Caps at the HTTP boundary, mirroring core's own (packages/core/src/entry.ts):
+/** Caps at the HTTP boundary, mirroring core's own (src/core/entry.ts):
  *  the inbox is an agent's reading list, not a paste bin. */
 export const MAX_NOTE = 10_000;
 export const MAX_SELECTOR = 2000;

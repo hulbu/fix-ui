@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.browser.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Nothing is emitted, so the layout `rootDir` polices for the build is
+    // irrelevant here — and the config files below sit outside `src`.
+    "rootDir": "."
+  },
+  "include": ["src/core/**/*.ts", "src/embed/**/*.ts", "src/embed/**/*.tsx", "vitest.config.ts"],
+  "exclude": []
+}

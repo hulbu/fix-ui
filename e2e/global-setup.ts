@@ -8,13 +8,13 @@ import { build } from "esbuild";
  * Everything the suite tests has to be built from source first — otherwise a
  * green run says nothing about the code in the working tree:
  *
- *   - `packages/bridge/dist/cli.js`, the daemon every spec spawns,
- *   - `packages/core/dist` and `packages/embed/dist`, because both packages now
- *     resolve through their `exports` to built JavaScript — so the fixture
- *     bundle below is built from the artefact that would be published, not from
- *     a TypeScript source tree no consumer ever sees,
+ *   - `packages/fixui/dist`, which holds both `bridge/cli.js` (the daemon every
+ *     spec spawns) and the embed the fixture bundle below imports — the package
+ *     resolves through its `exports` to built JavaScript, so that bundle is
+ *     built from the artefact that would be published, not from a TypeScript
+ *     source tree no consumer ever sees,
  *   - `extension/dist/*`, loaded unpacked by the extension spec,
- *   - `fixtures/fixui.js`, an IIFE bundle of the npm embed (`@hulbu/fixui`),
+ *   - `fixtures/fixui.js`, an IIFE bundle of the npm embed (`fixui`),
  *     because a fixture page is a plain `<script src>` with no bundler, and
  *   - `fixtures/react-app.js`, React rendering a named component so
  *     `getReactComponentName` has something to find.
@@ -30,11 +30,7 @@ const fixtures = path.join(here, "fixtures");
 async function buildWorkspacePackages(): Promise<void> {
   // `pnpm --filter` from the repo root, so this works however the suite was
   // invoked (`pnpm --filter e2e test`, `playwright test`, an IDE runner).
-  await run("pnpm", ["--filter", "fixui-bridge", "build"], { cwd: repoRoot });
-  // Core before embed, and both before the extension: the embed's build reads
-  // core's emitted `.d.ts`, and the extension bundles core's emitted JS.
-  await run("pnpm", ["--filter", "@hulbu/fixui-core", "build"], { cwd: repoRoot });
-  await run("pnpm", ["--filter", "@hulbu/fixui", "build"], { cwd: repoRoot });
+  await run("pnpm", ["--filter", "fixui", "build"], { cwd: repoRoot });
   await run("pnpm", ["--filter", "fix-ui-extension", "build"], { cwd: repoRoot });
 }
 

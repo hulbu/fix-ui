@@ -2,7 +2,7 @@
  * The Vite adapter — one line in `vite.config.ts`:
  *
  * ```ts
- * import { fixui } from "@hulbu/fixui/vite";
+ * import { fixui } from "fixui/vite";
  * export default defineConfig({ plugins: [fixui()] });
  * ```
  *
@@ -189,10 +189,10 @@ const serveGlobalScript: MiddlewareHandler = async (_req, res) => {
  */
 async function globalScript(): Promise<string> {
   try {
-    return await readFile(new URL("../dist/fixui.global.js", import.meta.url), "utf8");
+    return await readFile(new URL("../../dist/fixui.global.js", import.meta.url), "utf8");
   } catch {
     return `console.error(${JSON.stringify(
-      "[fix-ui] dist/fixui.global.js is missing from @hulbu/fixui. Reinstall the package, or " +
+      "[fix-ui] dist/fixui.global.js is missing from fixui. Reinstall the package, or " +
         "run its build script if you are working from a checkout.",
     )});\n`;
   }

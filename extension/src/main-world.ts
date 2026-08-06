@@ -1,4 +1,4 @@
-import { getReactComponentName } from "@hulbu/fixui-core";
+import { getReactComponentName } from "../../packages/fixui/src/core/index.js";
 import {
   CAPTURE_TOGGLE,
   COMPONENT_QUERY,

@@ -273,7 +273,7 @@ it("returns 500 with the attempted path when the inbox is unwritable", async () 
 
 it("GET /healthz → {ok:true,name:'fixui-bridge',version}; OPTIONS preflight returns CORS headers", async () => {
   const pkg = JSON.parse(
-    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../package.json", import.meta.url), "utf8"),
   ) as { version: string };
 
   const res = await fetch(`${base}/healthz`);

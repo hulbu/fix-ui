@@ -157,7 +157,7 @@ describe("installing the package", () => {
 
     expect(result.manager).toBe("pnpm");
     expect(installs[0]?.command.slice(0, 3)).toEqual(["pnpm", "add", "-D"]);
-    expect(installs[0]?.command).toContain("@hulbu/fixui");
+    expect(installs[0]?.command).toContain("fixui");
   });
 
   it("uses yarn for yarn.lock and npm for package-lock.json", async () => {
@@ -196,8 +196,7 @@ describe("installing the package", () => {
     };
     // The manager owns package.json from the moment it runs; writing a stale
     // copy of it back would silently undo the install.
-    expect(manifest.devDependencies["@hulbu/fixui"]).toBeDefined();
-    expect(manifest.devDependencies["fixui-bridge"]).toBeDefined();
+    expect(manifest.devDependencies.fixui).toBeDefined();
     expect(manifest.devDependencies.vite).toBe("^6.0.0");
     expect(manifest.scripts.dev).toBe("fixui dev -- vite");
   });
@@ -214,7 +213,7 @@ describe("installing the package", () => {
       },
     });
 
-    expect(result.changed.join("\n")).toMatch(/installed @hulbu\/fixui/);
+    expect(result.changed.join("\n")).toMatch(/installed fixui/);
     expect(result.skipped.join("\n")).not.toMatch(/install/);
   });
 
@@ -256,7 +255,7 @@ describe(".mcp.json", () => {
     await init();
 
     expect(JSON.parse(await read(".mcp.json"))).toEqual({
-      mcpServers: { fixui: { command: "npx", args: ["fixui-bridge"] } },
+      mcpServers: { fixui: { command: "npx", args: ["fixui"] } },
     });
   });
 
@@ -273,7 +272,7 @@ describe(".mcp.json", () => {
       mcpServers: Record<string, unknown>;
     };
     expect(parsed.mcpServers.other).toEqual({ command: "other" });
-    expect(parsed.mcpServers.fixui).toEqual({ command: "npx", args: ["fixui-bridge"] });
+    expect(parsed.mcpServers.fixui).toEqual({ command: "npx", args: ["fixui"] });
   });
 
   it("leaves an existing fixui entry exactly as the developer wrote it", async () => {
@@ -378,13 +377,12 @@ describe("Next (app router)", () => {
     expect(manifest.scripts.build).toBe("next build");
 
     const layout = await read("app/layout.tsx");
-    expect(layout).toContain('import { FixUiScript } from "@hulbu/fixui/next";');
+    expect(layout).toContain('import { FixUiScript } from "fixui/next";');
     expect(layout).toMatch(/<FixUiScript \/>\s*<\/body>/);
 
-    // The embed ships raw TypeScript: without this the integration is silent.
+    // Next compiles the package along with the app — see TRANSPILE in init.ts.
     const config = await read("next.config.mjs");
-    expect(config).toContain("@hulbu/fixui-core");
-    expect(config).toContain("transpilePackages");
+    expect(config).toContain('transpilePackages: ["fixui"]');
   });
 
   it("finds a src/app layout too", async () => {
@@ -410,7 +408,7 @@ describe("Next (app router)", () => {
     const config = await read("next.config.mjs");
     expect(config).toContain("reactStrictMode: true");
     expect(config).toMatch(/transpilePackages: \[[^\]]*"ui-kit"[^\]]*\]/);
-    expect(config).toMatch(/transpilePackages: \[[^\]]*"@hulbu\/fixui"[^\]]*\]/);
+    expect(config).toMatch(/transpilePackages: \[[^\]]*"fixui"[^\]]*\]/);
   });
 
   it("adds transpilePackages to a config that has none", async () => {
@@ -424,7 +422,7 @@ describe("Next (app router)", () => {
 
     const config = await read("next.config.js");
     expect(config).toContain("reactStrictMode: true");
-    expect(config).toContain('transpilePackages: ["@hulbu/fixui", "@hulbu/fixui-core"]');
+    expect(config).toContain('transpilePackages: ["fixui"]');
   });
 
   it("skips a layout it cannot read confidently and says what to add", async () => {
@@ -483,7 +481,7 @@ describe("Vite", () => {
     expect(manifest.scripts.dev).toBe("fixui dev -- vite");
 
     const config = await read("vite.config.ts");
-    expect(config).toContain('import { fixui } from "@hulbu/fixui/vite";');
+    expect(config).toContain('import { fixui } from "fixui/vite";');
     expect(config).toContain("react()");
     expect(config).toMatch(/plugins: \[[\s\S]*fixui\(\)/);
   });
@@ -520,8 +518,8 @@ describe("an unrecognised project", () => {
     const result = await init();
 
     expect(result.stack).toBe("unknown");
-    expect(logs.join("\n")).toMatch(/@hulbu\/fixui\/next/);
-    expect(logs.join("\n")).toMatch(/@hulbu\/fixui\/vite/);
+    expect(logs.join("\n")).toMatch(/fixui\/next/);
+    expect(logs.join("\n")).toMatch(/fixui\/vite/);
     // The lifetime wrapper is right whatever the framework is.
     const manifest = JSON.parse(await read("package.json")) as {
       scripts: Record<string, string>;
@@ -603,33 +601,34 @@ describe("a workspace", () => {
     );
   }
 
-  it("installs the embed into the package that renders the app", async () => {
+  it("installs into the package that renders the app, and at the root", async () => {
     await workspaceRoot();
     await appPackage("website");
     await appPackage("packages/ui-lib", "typescript"); // not an app: no next, no vite
 
     const result = await init();
 
-    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
-    expect(embed?.cwd).toBe(path.join(project, "website"));
+    // The app package, because that is where `import … from "fixui/next"` is
+    // resolved from, and pnpm's isolated node_modules do not reach up.
+    const inApp = installs.find((plan) => plan.cwd === path.join(project, "website"));
+    expect(inApp?.packages.fixui).toBeDefined();
 
-    // The bridge stays at the root: `fixui dev` wraps the root dev script.
-    const bridge = installs.find((plan) => plan.packages["fixui-bridge"] !== undefined);
-    expect(bridge?.cwd).toBe(project);
-    expect(bridge?.packages["@hulbu/fixui"]).toBeUndefined();
+    // And the root, because `fixui dev` wraps the root dev script and the bin
+    // has to be findable from there.
+    const atRoot = installs.find((plan) => plan.cwd === project);
+    expect(atRoot?.packages.fixui).toBeDefined();
 
     const root = JSON.parse(await read("package.json")) as {
       devDependencies: Record<string, string>;
       scripts: Record<string, string>;
     };
-    expect(root.devDependencies["@hulbu/fixui"]).toBeUndefined();
-    expect(root.devDependencies["fixui-bridge"]).toBeDefined();
+    expect(root.devDependencies.fixui).toBeDefined();
     expect(root.scripts.dev).toBe("fixui dev -- turbo dev");
 
     const app = JSON.parse(await read("website/package.json")) as {
       devDependencies: Record<string, string>;
     };
-    expect(app.devDependencies["@hulbu/fixui"]).toBe("@hulbu/fixui");
+    expect(app.devDependencies.fixui).toBe("fixui");
     expect(result.changed.join("\n")).toMatch(/website/);
   });
 
@@ -642,8 +641,8 @@ describe("a workspace", () => {
 
     await init();
 
-    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
-    expect(embed?.cwd).toBe(path.join(project, "apps", "storefront"));
+    const inApp = installs.find((plan) => plan.cwd === path.join(project, "apps", "storefront"));
+    expect(inApp?.packages.fixui).toBeDefined();
   });
 
   it("falls back to the root and names the packages when several qualify", async () => {
@@ -653,12 +652,11 @@ describe("a workspace", () => {
 
     const result = await init();
 
-    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
-    expect(embed?.cwd).toBe(project);
+    expect(installs.map((plan) => plan.cwd)).toEqual([project]);
     const said = result.skipped.join("\n");
     expect(said).toMatch(/website/);
     expect(said).toMatch(/admin/);
-    expect(said).toMatch(/@hulbu\/fixui/);
+    expect(said).toMatch(/fixui/);
   });
 
   it("falls back to the root and says so when no package qualifies", async () => {
@@ -667,9 +665,8 @@ describe("a workspace", () => {
 
     const result = await init();
 
-    const embed = installs.find((plan) => plan.packages["@hulbu/fixui"] !== undefined);
-    expect(embed?.cwd).toBe(project);
-    expect(result.skipped.join("\n")).toMatch(/@hulbu\/fixui/);
+    expect(installs.map((plan) => plan.cwd)).toEqual([project]);
+    expect(result.skipped.join("\n")).toMatch(/fixui/);
   });
 
   it("changes nothing the second time", async () => {
@@ -698,13 +695,7 @@ describe("--local", () => {
     tempDirs.push(local);
     if (packed) {
       await mkdir(path.join(local, "dist"), { recursive: true });
-      for (const name of [
-        "hulbu-fixui-0.0.1.tgz",
-        "hulbu-fixui-core-0.0.1.tgz",
-        "fixui-bridge-0.0.1.tgz",
-      ]) {
-        await writeFile(path.join(local, "dist", name), "");
-      }
+      await writeFile(path.join(local, "dist", "fixui-0.1.0.tgz"), "");
     }
     return local;
   }
@@ -717,7 +708,10 @@ describe("--local", () => {
 
     expect(JSON.parse(await read(".mcp.json"))).toEqual({
       mcpServers: {
-        fixui: { command: "node", args: [path.join(local, "packages/bridge/dist/cli.js")] },
+        fixui: {
+          command: "node",
+          args: [path.join(local, "packages/fixui/dist/bridge/cli.js")],
+        },
       },
     });
   });
@@ -730,12 +724,10 @@ describe("--local", () => {
     await init({ local, skillSource: await resolveSkillSource() });
 
     const specs = installs.flatMap((plan) => Object.values(plan.packages));
-    expect(specs.join(" ")).not.toMatch(/link:|packages\/embed/);
-    expect(specs).toContain(`file:${path.join(local, "dist", "hulbu-fixui-0.0.1.tgz")}`);
-    expect(specs).toContain(`file:${path.join(local, "dist", "fixui-bridge-0.0.1.tgz")}`);
-    // The embed's dependency is unpublished: without the core tarball the
-    // install resolves it from a registry that has never seen it.
-    expect(specs).toContain(`file:${path.join(local, "dist", "hulbu-fixui-core-0.0.1.tgz")}`);
+    expect(specs.join(" ")).not.toMatch(/link:|packages\/fixui\/dist/);
+    // One package, so one tarball — and nothing left over that a registry
+    // would have to resolve.
+    expect(specs).toEqual([`file:${path.join(local, "dist", "fixui-0.1.0.tgz")}`]);
   });
 
   it("warns that the entries are machine-local", async () => {

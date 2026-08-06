@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "sourceMap": true,
+    // The maps carry their own sources, so the tarball ships `dist` and nothing
+    // else: a stack trace resolves without `src` being published alongside it.
+    "inlineSources": true
+  },
+  // Two tsc projects, one package. This one is the half that a *browser* (or a
+  // bundler compiling for one) sees — the picker engine in `src/core` and the
+  // adapters in `src/embed` — so it keeps the DOM lib and the bundler-style
+  // resolution the adapters are compiled under. `src/bridge` is Node-only and is
+  // built by tsconfig.node.json; the two write into disjoint subdirectories of
+  // `dist`.
+  "include": ["src/core/**/*.ts", "src/embed/**/*.ts", "src/embed/**/*.tsx"],
+  // `global.ts` is not a module entry point — it is the source esbuild bundles
+  // into the standalone `dist/fixui.global.js` for the plain-HTML adapter. tsc
+  // compiling it too would put a second, self-executing `dist/embed/global.js`
+  // in the tarball that nothing can reach through `exports`.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/embed/global.ts"]
+}

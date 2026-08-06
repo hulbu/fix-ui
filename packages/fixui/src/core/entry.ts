@@ -11,7 +11,7 @@ export const MAX_CONSOLE_MESSAGE = 300;
 export const MAX_CONSOLE_SOURCE = 160;
 /** Generous for anything a person types, and small enough that nothing can use
  *  an inbox as storage. The bridge enforces the same numbers at its own HTTP
- *  boundary (packages/bridge/src/server.ts) — keep the two in step. */
+ *  boundary (src/bridge/server.ts) — keep the two in step. */
 export const MAX_NOTE = 10_000;
 export const MAX_SELECTOR = 2000;
 

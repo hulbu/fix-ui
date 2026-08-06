@@ -7,7 +7,7 @@ import { FixUi } from "./react.js";
  * The Next adapter — one line in `app/layout.tsx` (or `pages/_app.tsx`):
  *
  * ```tsx
- * import { FixUiScript } from "@hulbu/fixui/next";
+ * import { FixUiScript } from "fixui/next";
  * // …inside <body>:
  * <FixUiScript />
  * ```

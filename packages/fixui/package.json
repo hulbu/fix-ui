@@ -1,6 +1,6 @@
 {
-  "name": "@hulbu/fixui",
-  "version": "0.0.2",
+  "name": "fixui",
+  "version": "0.1.0",
   "description": "Point at any UI element in your running app and leave a note for your coding agent.",
   "keywords": [
     "fix-ui",
@@ -10,6 +10,8 @@
     "next",
     "vite",
     "react",
+    "mcp",
+    "mcp-server",
     "ai-agent",
     "coding-agent"
   ],
@@ -20,48 +22,54 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hulbu/fix-ui.git",
-    "directory": "packages/embed"
+    "directory": "packages/fixui"
   },
   "license": "MIT",
   "type": "module",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/embed/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/embed/index.d.ts",
+      "default": "./dist/embed/index.js"
     },
     "./react": {
-      "types": "./dist/react.d.ts",
-      "default": "./dist/react.js"
+      "types": "./dist/embed/react.d.ts",
+      "default": "./dist/embed/react.js"
     },
     "./next": {
-      "types": "./dist/next.d.ts",
-      "default": "./dist/next.js"
+      "types": "./dist/embed/next.d.ts",
+      "default": "./dist/embed/next.js"
     },
     "./vite": {
-      "types": "./dist/vite.d.ts",
-      "default": "./dist/vite.js"
+      "types": "./dist/embed/vite.d.ts",
+      "default": "./dist/embed/vite.js"
     },
     "./dist/fixui.global.js": "./dist/fixui.global.js",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "fixui": "./dist/bridge/cli.js"
+  },
   "files": [
     "dist",
+    "skills/fix-ui",
     "README.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public"
+  "engines": {
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && pnpm run build:global",
-    "build:global": "esbuild src/global.ts --bundle --format=iife --platform=browser --target=chrome116,firefox115,safari16 --legal-comments=none --outfile=dist/fixui.global.js",
+    "build": "pnpm run build:browser && pnpm run build:node && pnpm run build:global",
+    "build:browser": "tsc -p tsconfig.browser.json",
+    "build:node": "tsc -p tsconfig.node.json",
+    "build:global": "esbuild src/embed/global.ts --bundle --format=iife --platform=browser --target=chrome116,firefox115,safari16 --legal-comments=none --outfile=dist/fixui.global.js",
     "prepack": "pnpm run build",
-    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck": "tsc -p tsconfig.browser.typecheck.json && tsc -p tsconfig.node.typecheck.json",
     "test": "vitest run"
   },
   "dependencies": {
-    "@hulbu/fixui-core": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.12.0"
   },
   "peerDependencies": {
     "react": ">=18"

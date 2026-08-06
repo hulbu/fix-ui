@@ -146,7 +146,7 @@ describe("buildEntry", () => {
 
   /**
    * The bridge refuses an over-long note or selector at its HTTP boundary
-   * (packages/bridge/src/server.ts). Core has to agree, in both directions: an
+   * (src/bridge/server.ts). Core has to agree, in both directions: an
    * entry it BUILDS must always be one the bridge accepts, and one it merely
    * validates must be rejected here rather than queued and retried forever.
    */

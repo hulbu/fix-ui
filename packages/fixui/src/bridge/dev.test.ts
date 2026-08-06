@@ -19,8 +19,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { DISCOVERY_FILE, type Discovery } from "./discovery.js";
 
-const packageDir = fileURLToPath(new URL("..", import.meta.url));
-const cliPath = path.join(packageDir, "dist", "cli.js");
+const packageDir = fileURLToPath(new URL("../..", import.meta.url));
+const cliPath = path.join(packageDir, "dist", "bridge", "cli.js");
 
 /** A dev command that does nothing until it is signalled — a stand-in for a
  *  dev server, which is exactly a process that never ends on its own. */

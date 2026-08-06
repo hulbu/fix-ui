@@ -5,7 +5,7 @@ import {
   type Picker,
   type ReviewVerdict,
   type Transport,
-} from "@hulbu/fixui-core";
+} from "../../packages/fixui/src/core/index.js";
 import {
   CAPTURE_TOGGLE,
   COMPONENT_QUERY,

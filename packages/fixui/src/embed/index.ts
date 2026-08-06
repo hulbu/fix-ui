@@ -5,10 +5,10 @@ import {
   createTransport,
   type FeedbackEntry,
   type Picker,
-} from "@hulbu/fixui-core";
+} from "../core/index.js";
 
 /**
- * The npm embed (docs/design.md "@hulbu/fixui — the npm embed"): one call
+ * The npm embed (docs/design.md "the npm embed"): one call
  * wires core's picker to a transport, to the page's console errors, and to the
  * bridge's review channel — the browser realities core deliberately refuses to
  * assume. Dev-builds only by convention: `initFixUi` always runs when called;
@@ -172,4 +172,4 @@ export function initFixUi(
   };
 }
 
-export type { FeedbackEntry, Picker } from "@hulbu/fixui-core";
+export type { FeedbackEntry, Picker } from "../core/index.js";

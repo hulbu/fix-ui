@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Nothing is emitted, so the layout `rootDir` polices for the build is
+    // irrelevant here — and the config files below sit outside `src`.
+    "rootDir": "."
+  },
+  "include": ["src/bridge/**/*.ts", "vitest.global-setup.ts"],
+  "exclude": []
+}

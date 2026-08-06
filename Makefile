@@ -8,25 +8,24 @@ SHELL := /bin/bash
 
 REPO    := $(shell pwd)
 DIST    := $(REPO)/dist
-BRIDGE  := $(REPO)/packages/bridge/dist/cli.js
+PKG     := $(REPO)/packages/fixui
+BRIDGE  := $(PKG)/dist/bridge/cli.js
 EXT     := $(REPO)/extension
 
 # Port and project the `run` target uses. Override: make run PORT=4000 PROJECT=~/app
 PORT    ?= 3499
 PROJECT ?= $(CURDIR)
 
-.PHONY: help install build build-bridge build-core build-embed build-extension package check typecheck test e2e run extension-path clean distclean
+.PHONY: help install build build-fixui build-extension package check typecheck test e2e run extension-path clean distclean
 
 help:
 	@echo "fix-ui"
 	@echo
 	@echo "  make install          install workspace dependencies (pnpm)"
-	@echo "  make build            build everything on the default path: bridge, embed, tarballs"
-	@echo "  make build-bridge     compile the bridge daemon to packages/bridge/dist"
-	@echo "  make build-core       compile the core engine to packages/core/dist"
-	@echo "  make build-embed      compile the embed and its global script to packages/embed/dist"
+	@echo "  make build            build everything on the default path: the fixui package, tarball"
+	@echo "  make build-fixui      compile fixui to packages/fixui/dist (embed, bridge, global script)"
 	@echo "  make build-extension  bundle the Chrome extension into extension/dist"
-	@echo "  make package          pack publishable npm tarballs into dist/"
+	@echo "  make package          pack the publishable npm tarball into dist/"
 	@echo
 	@echo "  make check            the full gate: typecheck + unit/contract + e2e"
 	@echo "  make typecheck        tsc across every package"
@@ -41,53 +40,42 @@ help:
 install:
 	pnpm install
 
-# The bridge must be built before the extension: the e2e harness and the
-# extension's own build both assume a compiled daemon is available to test against.
 # The extension is deliberately NOT built here. It is the adapter for sites you
 # do not control, and it is off the default path — `make build-extension` when
 # you want it. Its tests still run in `make test`, so it cannot rot unnoticed.
-build: build-bridge build-core build-embed package
+build: build-fixui package
 	@echo
 	@echo "built:"
-	@echo "  bridge     $(BRIDGE)"
-	@echo "  core       $(REPO)/packages/core/dist"
-	@echo "  embed      $(REPO)/packages/embed/dist"
-	@echo "  tarballs   $(DIST)"
+	@echo "  fixui      $(PKG)/dist"
+	@echo "  bin        $(BRIDGE)"
+	@echo "  tarball    $(DIST)"
 	@ls -1 $(DIST)/*.tgz 2>/dev/null | sed 's|^|             |'
 	@echo
 	@echo "  (extension not built — it is off the default path: make build-extension)"
 
-build-bridge:
-	pnpm --filter fixui-bridge build
-
-build-core:
-	pnpm --filter @hulbu/fixui-core build
-
-# Two artefacts from one build: the compiled ESM + declarations every adapter
-# entry point resolves to, and `dist/fixui.global.js`, the IIFE the plain-HTML
-# adapter loads and the Vite plugin serves. The npm tarball is wrong without
-# either — an app would ask for files that are not in the package.
-#
-# Needs core built first: the embed's `tsc` reads core's emitted `.d.ts`.
-build-embed: build-core
-	pnpm --filter @hulbu/fixui build
+# Three artefacts from one build: the browser half (`dist/core`, `dist/embed` —
+# the compiled ESM + declarations every adapter entry point resolves to), the
+# node half (`dist/bridge`, whose `cli.js` is the bin), and
+# `dist/fixui.global.js`, the IIFE the plain-HTML adapter loads and the Vite
+# plugin serves. The npm tarball is wrong without any of them — an app would ask
+# for files that are not in the package.
+build-fixui:
+	pnpm --filter fixui build
 
 build-extension:
 	pnpm --filter fix-ui-extension build
 
-# `pnpm pack` rewrites `workspace:*` deps to real versions, so the tarballs
-# resolve each other outside the monorepo, and each package's `prepack` rebuilds
-# its own `dist` — a tarball can never be assembled from a stale one.
+# `prepack` rebuilds `dist` first, so a tarball can never be assembled from a
+# stale one. One package, so there is no cross-package version pin that could
+# point at something a registry has never seen — the failure that made the
+# first publish uninstallable.
 #
-# These are consumer-ready: compiled ESM behind `exports`, `.d.ts` beside it,
-# `files` limited to what ships. Publishing them is a human's call — see
-# .superpowers/publishable-report.md for the exact commands.
-package: build-bridge build-embed
+# The result is consumer-ready: compiled ESM behind `exports`, `.d.ts` beside
+# it, the `fixui` bin, the shipped skill, and `files` limited to what ships.
+package: build-fixui
 	@mkdir -p $(DIST)
 	@rm -f $(DIST)/*.tgz
-	pnpm --filter @hulbu/fixui-core exec pnpm pack --pack-destination $(DIST)
-	pnpm --filter @hulbu/fixui      exec pnpm pack --pack-destination $(DIST)
-	pnpm --filter fixui-bridge      exec pnpm pack --pack-destination $(DIST)
+	pnpm --filter fixui exec pnpm pack --pack-destination $(DIST)
 
 check: typecheck test e2e
 
@@ -101,14 +89,14 @@ e2e:
 	pnpm --filter e2e test
 
 # Runs in the foreground and prints its URL and review token. Ctrl-C to stop.
-run: build-bridge
+run: build-fixui
 	cd $(PROJECT) && node $(BRIDGE) --port $(PORT)
 
 extension-path:
 	@echo "$(EXT)"
 
 clean:
-	rm -rf $(DIST) packages/bridge/dist packages/core/dist packages/embed/dist extension/dist e2e/fixtures/*.js test-results
+	rm -rf $(DIST) packages/fixui/dist extension/dist e2e/fixtures/*.js test-results
 
 distclean: clean
 	rm -rf node_modules packages/*/node_modules extension/node_modules e2e/node_modules

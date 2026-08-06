@@ -1,7 +1,7 @@
 /**
  * The CLI is exercised as a real process against the *built* dist (built once
  * by vitest.global-setup.ts — so this suite still runs against a bin that
- * `pnpm --filter fixui-bridge build` produced).
+ * `pnpm --filter fixui build` produced).
  *
  * This file is about the **proxy** role: a `fixui-bridge` an agent harness
  * spawned over stdio (`.mcp.json`), which never binds a port of its own. It
@@ -23,8 +23,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { afterEach, expect, it } from "vitest";
 import { DISCOVERY_FILE, type Discovery } from "./discovery.js";
 
-const packageDir = fileURLToPath(new URL("..", import.meta.url));
-const cliPath = path.join(packageDir, "dist", "cli.js");
+const packageDir = fileURLToPath(new URL("../..", import.meta.url));
+const cliPath = path.join(packageDir, "dist", "bridge", "cli.js");
 
 /** A dev command that ends only when it is signalled. */
 const SLEEPER = [process.execPath, "-e", "setInterval(() => {}, 1 << 30)"];
@@ -290,8 +290,7 @@ it("init wires a project up and prints what it changed", async () => {
         scripts: { dev: "vite" },
         devDependencies: {
           vite: "^6.0.0",
-          "@hulbu/fixui": "^0.0.1",
-          "fixui-bridge": "^0.0.1",
+          fixui: "^0.1.0",
         },
       },
       undefined,
@@ -304,7 +303,7 @@ it("init wires a project up and prints what it changed", async () => {
   expect(await run.exited).toBe(0);
 
   expect(JSON.parse(await readFile(path.join(project, ".mcp.json"), "utf8"))).toEqual({
-    mcpServers: { fixui: { command: "npx", args: ["fixui-bridge"] } },
+    mcpServers: { fixui: { command: "npx", args: ["fixui"] } },
   });
   expect(await readFile(path.join(project, "package.json"), "utf8")).toContain(
     "fixui dev -- vite",

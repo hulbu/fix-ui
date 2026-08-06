@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 /**
  * A real bridge per test, started the way a developer starts one: the built
- * `packages/bridge/dist/cli.js` as `fixui dev -- <a process that just waits>`,
+ * `packages/fixui/dist/bridge/cli.js` as `fixui dev -- <a process that just waits>`,
  * with a throwaway directory as its project. The bridge's lifetime belongs to
  * that dev command, so `stop()` is a signal to the wrapper and everything —
  * port, discovery file, child — goes away together.
@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
  * confirms the port before any test is handed it.
  */
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const cliPath = path.join(repoRoot, "packages", "bridge", "dist", "cli.js");
+const cliPath = path.join(repoRoot, "packages", "fixui", "dist", "bridge", "cli.js");
 
 /** A stand-in for a dev server: a process that ends only when it is signalled. */
 const DEV_COMMAND = [process.execPath, "-e", "setInterval(() => {}, 1 << 30)"];

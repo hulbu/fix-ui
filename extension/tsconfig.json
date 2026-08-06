@@ -2,13 +2,13 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["chrome"],
-    // `@hulbu/fixui-core` now resolves through its `exports` to a built
-    // `.d.ts`. This package emits nothing, so it reads core's source directly
-    // rather than making a typecheck on a fresh clone depend on core's build.
-    "paths": {
-      "@hulbu/fixui-core": ["../packages/core/src/index.ts"]
-    }
+    "types": ["chrome"]
   },
+  // The picker engine is reached by a relative path into `packages/fixui/src`,
+  // not through the `fixui` package: `fixui` publishes the browser *embed* at
+  // `.`, and this adapter needs the engine underneath it. This package is
+  // private and always bundled from source by esbuild, so a source path is the
+  // honest specifier — and it keeps a typecheck on a fresh clone from depending
+  // on anything being built first.
   "include": ["src/**/*.ts", "vitest.config.ts"]
 }
