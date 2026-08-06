@@ -91,16 +91,21 @@ so run it explicitly when you want it to be the gate:
 pnpm --filter e2e test    # real Chromium, a real bridge daemon per test
 ```
 
-Two packages have a build; core and the embed ship TypeScript sources and
-are bundled by whatever consumes them:
+Every publishable package compiles to `dist` and is consumed from there —
+no consumer is ever handed raw TypeScript:
 
 ```bash
+make build                            # all of it, plus tarballs in dist/
+pnpm --filter @hulbu/fixui-core build # → packages/core/dist (tsc: .js + .d.ts)
+pnpm --filter @hulbu/fixui build      # → packages/embed/dist (tsc, plus the esbuild IIFE)
 pnpm --filter fixui-bridge build      # → packages/bridge/dist (cli.js is the bin)
 pnpm --filter fix-ui-extension build  # → extension/dist (esbuild)
 ```
 
-The e2e suite builds what it tests before it runs, so neither is a
-prerequisite for it.
+Core has to be built before the embed — the embed's `tsc` reads core's
+emitted declarations. `make build` and `pnpm -r build` both order it for
+you, and the e2e suite builds what it tests before it runs, so none of it
+is a prerequisite for `make check`.
 
 **Run the bridge locally.** `node packages/bridge/dist/cli.js` — port 3499
 by default, `--port N` or `FIXUI_PORT` to move it; the project it writes to

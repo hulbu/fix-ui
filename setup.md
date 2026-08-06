@@ -37,7 +37,8 @@ It installs the package, registers the MCP server, drops in the skill, and — w
 | Vite / Astro / SvelteKit | `vite.config.*` plugins | `fixui()` from `@hulbu/fixui/vite` |
 | Anything else | a dev-only entry | `initFixUi()` from `@hulbu/fixui` |
 
-Next also needs this in `next.config.*`, or the import fails:
+`fixui init` also writes this into `next.config.*`. The packages ship compiled
+ESM, so it is no longer load-bearing — leave it, it costs nothing:
 
 ```ts
 transpilePackages: ["@hulbu/fixui", "@hulbu/fixui-core"]
@@ -52,7 +53,7 @@ Start the dev server and open the app. **An orange circle should appear bottom-r
 | What you see | What's wrong |
 |---|---|
 | No circle | The adapter line isn't rendering — wrong file, or outside `<body>` |
-| `Module not found` | Dependency in the wrong package, or `transpilePackages` missing |
+| `Module not found` | Dependency in the wrong package (in a monorepo, it must be in the one that renders the app) |
 | Circle, but notes never arrive | Dev server isn't running under `fixui dev` |
 
 ---

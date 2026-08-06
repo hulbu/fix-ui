@@ -91,10 +91,18 @@ were fixed on the branch; these are the residue.
 
 ## Before publishing
 
-- `@hulbu/fixui` depends on `@hulbu/fixui-core` as `workspace:*`; neither
-  scoped package sets `publishConfig.access: "public"`; `fixui-bridge`
-  would ship an empty tarball without a `prepack` that builds `dist`.
-  Core and embed have no `files`, `types`, or per-package README.
+- The packaging itself is done: all three build to `dist`, `exports` names
+  the built JavaScript with a `types` condition per entry point, `files`
+  ships nothing but `dist` (plus `skills` for the bridge), `prepack`
+  rebuilds so a tarball can never be cut from a stale one, and the scoped
+  pair sets `publishConfig.access: "public"`. See
+  `.superpowers/publishable-report.md` for the verification and the exact
+  publish commands.
+- `@hulbu/fixui` depends on `@hulbu/fixui-core` as `workspace:*`, which packs
+  as the exact version `0.0.1`. **Core has to be published first, and at the
+  same version as the embed**, or the embed is unresolvable on npm.
+- Nobody has claimed the `@hulbu` scope on npm, and none of the three names
+  has been checked for availability.
 - The LICENSE copyright holder ("hulbu") was inferred, not confirmed.
 - There is no CI workflow. Its absence is why a broken fresh-clone
   quickstart reached the final review.
