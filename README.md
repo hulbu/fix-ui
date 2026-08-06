@@ -8,8 +8,8 @@ name, page context, recent console errors — lands where your coding agent
 already looks. The name is the ritual: telling Claude Code to **"fix ui"**
 is how the loop closes.
 
-> **Status: v1, built.** Core, the npm embed, the Chrome extension and the
-> bridge are implemented: 199 unit and contract tests, plus a Playwright
+> **Status: v1, built.** The picker engine, the npm adapters, the Chrome
+> extension and the bridge are implemented: 332 unit and contract tests, plus a Playwright
 > suite that drives the real loops (picking, modal re-homing, the review
 > round-trip, the extension) in a real Chromium against a real bridge.
 > Nothing is published to npm or the Chrome Web Store yet — run it from
@@ -44,12 +44,22 @@ Two activation directions, non-negotiable in every adapter:
 
 ## Architecture (one core, two adapters, one bridge)
 
-| Package | What it is |
+One published package, `fixui`, with the boundaries kept as directories
+under `packages/fixui/src`:
+
+| Module | What it is |
 |---------|------------|
-| `@hulbu/fixui-core` | Picker, selector builder, entry schema, transport client. No DOM ownership opinions — adapters decide where UI mounts. |
-| `@hulbu/fixui` (npm embed) | One-line install for apps you own (`initFixUi()` in dev builds). Successor of hulbu's `tools/ui-feedback`. |
-| fix-ui extension (Chrome) | Same core on *any* site — no code changes to the target app. |
-| `fixui-bridge` | Tiny local daemon: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `list_surfaces`, `request_review`). |
+| `src/core` | Picker, selector builder, entry schema, transport client. No DOM ownership opinions — adapters decide where UI mounts. |
+| `src/embed` | The npm adapters: one-line install for apps you own (`initFixUi()` in dev builds), plus the React, Next and Vite entry points. Successor of hulbu's `tools/ui-feedback`. |
+| `src/bridge` | Tiny local daemon behind the `fixui` bin: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `list_surfaces`, `request_review`). |
+| fix-ui extension (Chrome) | Same core on *any* site — no code changes to the target app. Private, not published to npm. |
+
+**Why one package.** The first publish shipped an embed pinned to a separate
+core package at a version npm had tombstoned, so the embed could never be
+installed. A cross-package version pin is a failure mode one package simply
+cannot have. The internal boundaries were never the problem and they survive
+as directories; the browser half of the package still imports nothing at
+runtime, and no adapter entry point reaches the MCP SDK the bridge needs.
 
 Why both adapters exist: the embed reaches every user of an app that ships
 it (including browsers without extensions); the extension reaches every
@@ -73,7 +83,8 @@ capture format never diverge.
 
 ## Development
 
-A pnpm workspace: `packages/*` (core, embed, bridge), `extension`, `e2e`.
+A pnpm workspace: `packages/fixui` (the one published package), `extension`
+and `e2e` (both private).
 
 ```bash
 pnpm install
@@ -91,29 +102,29 @@ so run it explicitly when you want it to be the gate:
 pnpm --filter e2e test    # real Chromium, a real bridge daemon per test
 ```
 
-Every publishable package compiles to `dist` and is consumed from there —
-no consumer is ever handed raw TypeScript:
+The package compiles to `dist` and is consumed from there — no consumer is
+ever handed raw TypeScript:
 
 ```bash
-make build                            # all of it, plus tarballs in dist/
-pnpm --filter @hulbu/fixui-core build # → packages/core/dist (tsc: .js + .d.ts)
-pnpm --filter @hulbu/fixui build      # → packages/embed/dist (tsc, plus the esbuild IIFE)
-pnpm --filter fixui-bridge build      # → packages/bridge/dist (cli.js is the bin)
+make build                            # all of it, plus the tarball in dist/
+pnpm --filter fixui build             # → packages/fixui/dist
 pnpm --filter fix-ui-extension build  # → extension/dist (esbuild)
 ```
 
-Core has to be built before the embed — the embed's `tsc` reads core's
-emitted declarations. `make build` and `pnpm -r build` both order it for
-you, and the e2e suite builds what it tests before it runs, so none of it
-is a prerequisite for `make check`.
+One `pnpm --filter fixui build` produces three things: `dist/core` and
+`dist/embed` (the browser half, compiled under a DOM lib with bundler
+resolution), `dist/bridge` (the node half, NodeNext, whose `cli.js` is the
+bin), and `dist/fixui.global.js` (the esbuild IIFE the plain-HTML adapter
+loads and the Vite plugin serves). The e2e suite builds what it tests before
+it runs, so none of it is a prerequisite for `make check`.
 
-**Run the bridge locally.** `node packages/bridge/dist/cli.js` — port 3499
-by default, `--port N` or `FIXUI_PORT` to move it; the project it writes to
-is its own working directory. Started from a terminal it just serves HTTP;
-started by an agent harness (stdin is a pipe) it also serves MCP over
-stdio, so registering it is `claude mcp add fixui -- node
-/abs/path/packages/bridge/dist/cli.js`. A second instance finds the port
-taken by a bridge and becomes an MCP proxy to it, scoped to *its* cwd.
+**Run the bridge locally.** `node packages/fixui/dist/bridge/cli.js` — port
+3499 by default, `--port N` or `FIXUI_PORT` to move it; the project it
+writes to is its own working directory. Started from a terminal it just
+serves HTTP; started by an agent harness (stdin is a pipe) it also serves
+MCP over stdio, so registering it is `claude mcp add fixui -- node
+/abs/path/packages/fixui/dist/bridge/cli.js`. A second instance finds the
+port taken by a bridge and becomes an MCP proxy to it, scoped to *its* cwd.
 
 At startup it prints a **review token** and writes it to `.fix-ui.token` in
 its working directory (`FIXUI_TOKEN` pins it instead). Adapters need that
@@ -132,7 +143,7 @@ it off.
 
 **Use the embed in an app.** `initFixUi({ project: "/abs/path/to/repo",
 token: process.env.FIXUI_TOKEN })` in a dev-only code path, or `<FixUi />`
-from `@hulbu/fixui/react`, which is safe to leave in a root layout: it
+from `fixui/react`, which is safe to leave in a root layout: it
 no-ops in a production build. Add `label: "port 4001"` when you run the same
 app more than once — the agent lists connected pages with `list_surfaces` and
 can send a review to exactly one of them.

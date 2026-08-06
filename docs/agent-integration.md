@@ -206,10 +206,10 @@ extension alike):
   published yet, so it is registered from source:
 
   ```bash
-  claude mcp add fixui -- node /abs/path/to/fix-ui/packages/bridge/dist/cli.js
+  claude mcp add fixui -- node /abs/path/to/fix-ui/packages/fixui/dist/bridge/cli.js
   ```
 
-  Once it is on npm that becomes `claude mcp add fixui -- npx fixui-bridge`.
+  Once it is on npm that becomes `claude mcp add fixui -- npx fixui`.
 - `list_surfaces` is the one tool whose HTTP route is token-gated, which a
   **proxy** instance cannot always satisfy: it has no way to read a daemon's
   `.fix-ui.token` in another project. It uses `FIXUI_TOKEN` when both

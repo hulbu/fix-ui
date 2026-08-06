@@ -745,15 +745,19 @@
       </div>
     </div>
 
-    <pre><span class="c"># everything: bridge daemon, Chrome extension, npm tarballs</span>
+    <pre><span class="c"># everything on the default path: the fixui package and its npm tarball</span>
 make build
 
 <span class="c"># it prints where each artifact landed</span>
 built:
-  bridge     packages/bridge/dist/cli.js
-  extension  <span class="k">/…/fix-ui/extension</span>
-             ^ load THIS directory in chrome://extensions, not extension/dist
-  tarballs   dist/</pre>
+  fixui      packages/fixui/dist
+  bin        packages/fixui/dist/bridge/cli.js
+  tarball    dist/
+
+<span class="c"># the extension is off the default path</span>
+make build-extension
+make extension-path   <span class="c"># → /…/fix-ui/extension</span>
+                      <span class="c">#   load THIS directory in chrome://extensions, not extension/dist</span></pre>
 
     <div class="note warn">
       <b>Load <code>extension/</code>, not <code>extension/dist/</code>.</b>

@@ -14,14 +14,24 @@ make check                                           # typecheck + unit/contract
 
 ## The shape of the repo
 
-| Package | What it is |
+`packages/fixui` is the one published package. Its three module trees keep the
+boundaries the old three packages had — what was removed is the publishing
+topology, not the separation of concerns.
+
+| Directory | What it is |
 |---|---|
-| `packages/core` | The picker: element selection, selector building, the entry schema, the offline queue. Zero runtime dependencies, and it stays that way. |
-| `packages/embed` | The npm adapters — `initFixUi()`, `<FixUi />`, `<FixUiScript />` for Next, a Vite plugin, and a plain-`<script>` build. |
-| `packages/bridge` | The local daemon: HTTP for browsers, MCP for agents, plus `fixui dev` and `fixui init`. Node stdlib and the MCP SDK only. |
-| `extension` | The Chrome adapter, for sites you do not control. Off the default build path. |
-| `e2e` | Playwright, against a real bridge in a real Chromium. |
-| `skills/fix-ui` | What an agent reads to use the tool. Ships inside the bridge package. |
+| `packages/fixui/src/core` | The picker: element selection, selector building, the entry schema, the offline queue. Zero runtime dependencies, and it stays that way — nothing here or in `embed` may reach the MCP SDK. |
+| `packages/fixui/src/embed` | The npm adapters — `initFixUi()`, `<FixUi />`, `<FixUiScript />` for Next, a Vite plugin, and a plain-`<script>` build. |
+| `packages/fixui/src/bridge` | The local daemon behind the `fixui` bin: HTTP for browsers, MCP for agents, plus `fixui dev` and `fixui init`. Node stdlib and the MCP SDK only. |
+| `packages/fixui/skills/fix-ui` | What an agent reads to use the tool. Ships in the tarball; `fixui init` copies it into a project. |
+| `extension` | The Chrome adapter, for sites you do not control. Private, off the default build path; it bundles `src/core` from source. |
+| `e2e` | Playwright, against a real bridge in a real Chromium. Private. |
+
+The package builds under two tsc projects: `tsconfig.browser.json` for
+`src/core` + `src/embed` (DOM lib, bundler resolution) and
+`tsconfig.node.json` for `src/bridge` (NodeNext, no DOM). They emit into
+disjoint subdirectories of one `dist`, so a browser entry point can never
+pick up node-only code by accident.
 
 ## What a good PR looks like
 

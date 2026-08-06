@@ -15,7 +15,7 @@ Everything below is written for that agent. A human can follow it too.
 Run this in the project root:
 
 ```bash
-npx fix-ui init
+npx fixui init
 ```
 
 It installs the package, registers the MCP server, drops in the skill, and — when it recognizes the framework — makes both edits for you. If it prints an adapter table instead, do step 2 by hand.
@@ -32,19 +32,19 @@ It installs the package, registers the MCP server, drops in the skill, and — w
 
 | Stack | Where | Add |
 |---|---|---|
-| Next (app router) | `app/layout.tsx`, inside `<body>` | `<FixUiScript />` from `@hulbu/fixui/next` |
-| Next (pages router) | `pages/_app.tsx` | `<FixUi />` from `@hulbu/fixui/react` |
-| Vite / Astro / SvelteKit | `vite.config.*` plugins | `fixui()` from `@hulbu/fixui/vite` |
-| Anything else | a dev-only entry | `initFixUi()` from `@hulbu/fixui` |
+| Next (app router) | `app/layout.tsx`, inside `<body>` | `<FixUiScript />` from `fixui/next` |
+| Next (pages router) | `pages/_app.tsx` | `<FixUi />` from `fixui/react` |
+| Vite / Astro / SvelteKit | `vite.config.*` plugins | `fixui()` from `fixui/vite` |
+| Anything else | a dev-only entry | `initFixUi()` from `fixui` |
 
-`fixui init` also writes this into `next.config.*`. The packages ship compiled
+`fixui init` also writes this into `next.config.*`. The package ships compiled
 ESM, so it is no longer load-bearing — leave it, it costs nothing:
 
 ```ts
-transpilePackages: ["@hulbu/fixui", "@hulbu/fixui-core"]
+transpilePackages: ["fixui"]
 ```
 
-**Monorepo:** the dependency goes in the package that renders the app, not the workspace root. Wrap the *root* dev script — one bridge covers every app in the repo.
+**Monorepo:** `fixui` goes in the package that renders the app *and* at the workspace root — the app needs it to resolve the import, the root needs the `fixui` bin for the wrapped dev script. `fixui init` does both. Wrap the *root* dev script — one bridge covers every app in the repo.
 
 ## 3. Check it worked
 

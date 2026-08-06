@@ -23,7 +23,13 @@ session replay, multi-user feedback aggregation, hosted service. YAGNI.
 
 ## Components
 
-### `@hulbu/fixui-core`
+Since the consolidation these are three module trees inside one published
+package, `fixui` — `packages/fixui/src/{core,embed,bridge}`. The boundaries
+below are still real and still enforced (by the import graph, and by the two
+tsc projects the package builds under); what went away is the *publishing*
+topology, where three tarballs pinned each other by version.
+
+### `src/core` — the picker engine
 
 What it does: everything shared — element picking state machine, selector
 building, React/framework component-name detection, the entry schema and
@@ -40,7 +46,7 @@ Boundary rule: core knows *nothing* about chrome.* APIs, Next.js, or the
 bridge's filesystem — that's what keeps the embed and extension from
 diverging.
 
-### `@hulbu/fixui` — the npm embed
+### `src/embed` — the npm adapters
 
 What it does: mounts core's picker UI into the host page (chip, highlight,
 note popover, saved-notes panel). Dev-builds only by convention.
@@ -71,7 +77,7 @@ DevTools-grade overlay picking that ignores page CSS entirely, that is the
 `chrome.debugger` API (inspect-mode overlay) at the cost of Chrome's "this
 tab is being debugged" banner — documented as a possible v2 mode, not v1.
 
-### `fixui-bridge`
+### `src/bridge` — the daemon behind the `fixui` bin
 
 What it does: single local daemon, loopback-only, default
 `http://127.0.0.1:3499`.
@@ -198,12 +204,16 @@ advice: agent-integration.md "Privacy and trust". In this repo's terms:
 ```
 fix-ui/
 ├── packages/
-│   ├── core/
-│   ├── embed/
-│   └── bridge/
-├── extension/          # MV3, consumes core via the bundler
-├── e2e/                # Playwright: real Chromium, real bridge daemon
+│   └── fixui/          # the one published package
+│       ├── src/core/   #   picker engine
+│       ├── src/embed/  #   npm adapters  → dist/embed, dist/fixui.global.js
+│       ├── src/bridge/ #   daemon + MCP  → dist/bridge/cli.js (the `fixui` bin)
+│       └── skills/fix-ui/
+├── extension/          # MV3, private; bundles src/core from source
+├── e2e/                # Playwright: real Chromium, real bridge daemon; private
 └── docs/
 ```
 
-pnpm workspace, mirroring hulbu's conventions.
+pnpm workspace, mirroring hulbu's conventions. One publishable package by
+design: three of them meant three version pins between things that ship
+separately, and the first publish died on exactly that.
