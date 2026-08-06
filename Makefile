@@ -15,7 +15,7 @@ EXT     := $(REPO)/extension
 PORT    ?= 3499
 PROJECT ?= $(CURDIR)
 
-.PHONY: help install build build-bridge build-embed build-extension package check typecheck test e2e run extension-path clean distclean
+.PHONY: help install build build-bridge build-core build-embed build-extension package check typecheck test e2e run extension-path clean distclean
 
 help:
 	@echo "fix-ui"
@@ -23,7 +23,8 @@ help:
 	@echo "  make install          install workspace dependencies (pnpm)"
 	@echo "  make build            build everything on the default path: bridge, embed, tarballs"
 	@echo "  make build-bridge     compile the bridge daemon to packages/bridge/dist"
-	@echo "  make build-embed      bundle the embed's global script to packages/embed/dist"
+	@echo "  make build-core       compile the core engine to packages/core/dist"
+	@echo "  make build-embed      compile the embed and its global script to packages/embed/dist"
 	@echo "  make build-extension  bundle the Chrome extension into extension/dist"
 	@echo "  make package          pack publishable npm tarballs into dist/"
 	@echo
@@ -45,11 +46,12 @@ install:
 # The extension is deliberately NOT built here. It is the adapter for sites you
 # do not control, and it is off the default path — `make build-extension` when
 # you want it. Its tests still run in `make test`, so it cannot rot unnoticed.
-build: build-bridge build-embed package
+build: build-bridge build-core build-embed package
 	@echo
 	@echo "built:"
 	@echo "  bridge     $(BRIDGE)"
-	@echo "  embed      $(REPO)/packages/embed/dist/fixui.global.js"
+	@echo "  core       $(REPO)/packages/core/dist"
+	@echo "  embed      $(REPO)/packages/embed/dist"
 	@echo "  tarballs   $(DIST)"
 	@ls -1 $(DIST)/*.tgz 2>/dev/null | sed 's|^|             |'
 	@echo
@@ -58,20 +60,28 @@ build: build-bridge build-embed package
 build-bridge:
 	pnpm --filter fixui-bridge build
 
-# The plain-HTML adapter, and what the Vite plugin serves to the browser. The
-# npm tarball is wrong without it: an app would ask for a bundle that is not
-# in the package.
-build-embed:
+build-core:
+	pnpm --filter @hulbu/fixui-core build
+
+# Two artefacts from one build: the compiled ESM + declarations every adapter
+# entry point resolves to, and `dist/fixui.global.js`, the IIFE the plain-HTML
+# adapter loads and the Vite plugin serves. The npm tarball is wrong without
+# either — an app would ask for files that are not in the package.
+#
+# Needs core built first: the embed's `tsc` reads core's emitted `.d.ts`.
+build-embed: build-core
 	pnpm --filter @hulbu/fixui build
 
 build-extension:
 	pnpm --filter fix-ui-extension build
 
 # `pnpm pack` rewrites `workspace:*` deps to real versions, so the tarballs
-# resolve each other outside the monorepo. They are NOT consumer-ready yet:
-# core and embed still export raw .ts (no build, no `types`, no `files`), so
-# only a TypeScript-aware bundler can eat them. Fixing that belongs with the
-# publishing work — see docs/known-gaps.md "Before publishing".
+# resolve each other outside the monorepo, and each package's `prepack` rebuilds
+# its own `dist` — a tarball can never be assembled from a stale one.
+#
+# These are consumer-ready: compiled ESM behind `exports`, `.d.ts` beside it,
+# `files` limited to what ships. Publishing them is a human's call — see
+# .superpowers/publishable-report.md for the exact commands.
 package: build-bridge build-embed
 	@mkdir -p $(DIST)
 	@rm -f $(DIST)/*.tgz
@@ -98,7 +108,7 @@ extension-path:
 	@echo "$(EXT)"
 
 clean:
-	rm -rf $(DIST) packages/bridge/dist packages/embed/dist extension/dist e2e/fixtures/*.js test-results
+	rm -rf $(DIST) packages/bridge/dist packages/core/dist packages/embed/dist extension/dist e2e/fixtures/*.js test-results
 
 distclean: clean
 	rm -rf node_modules packages/*/node_modules extension/node_modules e2e/node_modules

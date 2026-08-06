@@ -29,8 +29,15 @@ const BRIDGE = "fixui-bridge";
  *  published and a registry cannot resolve it. */
 const CORE = "@hulbu/fixui-core";
 
-/** Next must transpile the embed: it ships raw TypeScript, and without this the
- *  integration fails silently rather than loudly. */
+/**
+ * The packages Next is told to transpile.
+ *
+ * Both now ship compiled ESM with declarations, so this is no longer the load
+ * bearing thing it once was — it is kept because a *local* install is a tarball
+ * of a working tree, and because Next's handling of a dependency it compiles
+ * itself is the path this integration has actually been exercised on. Writing it
+ * costs an app nothing; discovering it was needed costs an afternoon.
+ */
 const TRANSPILE = [EMBED, "@hulbu/fixui-core"];
 
 const IGNORES = [".fix-ui.json", ".fix-ui.jsonl", ".fix-ui.reviews.jsonl"];
@@ -131,16 +138,23 @@ function detectIndent(source: string): string {
 // ── the skill ───────────────────────────────────────────────────────────────
 
 /**
- * The shipped `skills/fix-ui/` directory: beside the package when installed,
- * at the repo root when running from a checkout. `undefined` means we have no
- * skill to copy, which is reported rather than papered over.
+ * The shipped `skills/fix-ui/` directory.
+ *
+ * It lives inside this package — `packages/bridge/skills/fix-ui` in the repo,
+ * `<install>/skills/fix-ui` once npm has unpacked the tarball — so the same
+ * `../skills/fix-ui`, relative to this module, finds it in both places whether
+ * this file is running as `src/init.ts` or as `dist/init.js`. That is the point:
+ * a repo-relative path would resolve to nothing at all for someone who installed
+ * from npm, and `init` would silently copy no skill.
+ *
+ * `undefined` means we have no skill to copy, which is reported rather than
+ * papered over.
  */
 export async function resolveSkillSource(local?: string): Promise<string | undefined> {
   const here = fileURLToPath(new URL(".", import.meta.url)); // src/ or dist/
   const candidates = [
-    ...(local === undefined ? [] : [path.join(local, "skills", "fix-ui")]),
-    path.join(here, "..", "skills", "fix-ui"), // published layout
-    path.join(here, "..", "..", "..", "skills", "fix-ui"), // this repo
+    ...(local === undefined ? [] : [path.join(local, "packages", "bridge", "skills", "fix-ui")]),
+    path.join(here, "..", "skills", "fix-ui"),
   ];
   for (const candidate of candidates) {
     if (await fileExists(path.join(candidate, "SKILL.md"))) return candidate;
@@ -461,7 +475,7 @@ const NEXT_CONFIGS = [
 
 const NEW_NEXT_CONFIG = `/** @type {import('next').NextConfig} */
 const nextConfig = {
-  // @hulbu/fixui ships raw TypeScript, so Next has to transpile it.
+  // Compiled by Next along with the app — see TRANSPILE in init.ts.
   transpilePackages: ${literal(TRANSPILE)},
 };
 
@@ -818,7 +832,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
       if (edited === undefined) {
         skipped.push(
           `${configName}: could not add transpilePackages — add ${literal(TRANSPILE)}` +
-            " to it by hand, or the embed's raw TypeScript will not build",
+            " to it by hand if the embed fails to compile",
         );
       } else if (edited !== source) {
         await writeFile(file, edited);

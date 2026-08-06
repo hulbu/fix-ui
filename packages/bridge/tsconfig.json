@@ -7,7 +7,10 @@
     "types": ["node"],
     "outDir": "dist",
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // The maps carry their own sources, so the tarball ships `dist` and nothing
+    // else: a stack trace resolves without `src` being published alongside it.
+    "inlineSources": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
