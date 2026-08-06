@@ -1,6 +1,6 @@
-import { buildSelector, getReactComponentName } from "./dom";
-import { buildEntry, type ConsoleError, type FeedbackEntry } from "./entry";
-import type { Transport } from "./transport";
+import { buildSelector, getReactComponentName } from "./dom.js";
+import { buildEntry, type ConsoleError, type FeedbackEntry } from "./entry.js";
+import type { Transport } from "./transport.js";
 
 /**
  * The picker: highlight box, note popover, saved-notes panel, chip, review

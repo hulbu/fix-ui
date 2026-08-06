@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 
-import { findDiscovery, noBridgeNotice } from "./find-discovery";
-import { FixUi } from "./react";
+import { findDiscovery, noBridgeNotice } from "./find-discovery.js";
+import { FixUi } from "./react.js";
 
 /**
  * The Next adapter — one line in `app/layout.tsx` (or `pages/_app.tsx`):

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Picker, ReviewVerdict } from "./picker";
-import { connectReviewChannel } from "./review-channel";
+import type { Picker, ReviewVerdict } from "./picker.js";
+import { connectReviewChannel } from "./review-channel.js";
 
 const BRIDGE = "http://127.0.0.1:3499";
 

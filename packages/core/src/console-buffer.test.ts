@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createConsoleBuffer, type ConsoleBuffer } from "./console-buffer";
+import { createConsoleBuffer, type ConsoleBuffer } from "./console-buffer.js";
 
 const T0 = "2026-07-31T09:00:00.000Z";
 const T1 = "2026-07-31T09:00:05.000Z";

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { initFixUi, type FixUiInternals, type FixUiOptions } from "./index";
+import { initFixUi, type FixUiInternals, type FixUiOptions } from "./index.js";
 
 const NS = "data-uifb";
 const DEFAULT_BRIDGE = "http://127.0.0.1:3499";

@@ -4,9 +4,9 @@ import path from "node:path";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FixUiOptions } from "./index";
-import { FixUiScript, resetNoticeForTests } from "./next";
-import { FixUi } from "./react";
+import type { FixUiOptions } from "./index.js";
+import { FixUiScript, resetNoticeForTests } from "./next.js";
+import { FixUi } from "./react.js";
 
 let dir: string;
 let info: ReturnType<typeof vi.spyOn>;

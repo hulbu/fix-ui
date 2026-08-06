@@ -1,4 +1,4 @@
-import { validateEntry, type FeedbackEntry } from "./entry";
+import { validateEntry, type FeedbackEntry } from "./entry.js";
 
 /**
  * Talks to the bridge — or to any app-provided endpoint with the same shape.

@@ -2,7 +2,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FixUi } from "./react";
+import { FixUi } from "./react.js";
 
 const NS = "data-uifb";
 

@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 
-import { initFixUi, type FixUiOptions } from "./index";
+import { initFixUi, type FixUiOptions } from "./index.js";
 
 /** Declared here so the package needs no `@types/node`. */
 declare const process: { env: { NODE_ENV?: string } };

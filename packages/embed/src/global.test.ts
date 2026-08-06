@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FixUiOptions } from "./index";
+import type { FixUiOptions } from "./index.js";
 
 vi.mock("./index", () => ({
   initFixUi: vi.fn(() => ({ close: () => undefined })),

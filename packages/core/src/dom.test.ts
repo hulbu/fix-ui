@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { buildSelector, getReactComponentName } from "./dom";
+import { buildSelector, getReactComponentName } from "./dom.js";
 
 describe("buildSelector", () => {
   beforeEach(() => {

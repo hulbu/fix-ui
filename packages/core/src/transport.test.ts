@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FeedbackEntry } from "./entry";
-import { createTransport, type Transport, type TransportOptions } from "./transport";
+import type { FeedbackEntry } from "./entry.js";
+import { createTransport, type Transport, type TransportOptions } from "./transport.js";
 
 const QUEUE_KEY = "fixui.queue.v1";
 const ENDPOINT = "http://127.0.0.1:3499/entries";

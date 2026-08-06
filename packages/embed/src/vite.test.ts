@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fixui, type HtmlTag, type MiddlewareHandler } from "./vite";
+import { fixui, type HtmlTag, type MiddlewareHandler } from "./vite.js";
 
 let dir: string;
 let info: ReturnType<typeof vi.spyOn>;

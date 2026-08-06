@@ -14,7 +14,7 @@
  * Zero dependencies and no bundler needed on the consuming side, which is the
  * whole point: this is the adapter for the stacks we have not heard of.
  */
-import { initFixUi, type FixUiOptions } from "./index";
+import { initFixUi, type FixUiOptions } from "./index.js";
 
 const MARKER = "data-fixui";
 

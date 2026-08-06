@@ -1,4 +1,4 @@
-import type { Picker, ReviewRequest, ReviewVerdict } from "./picker";
+import type { Picker, ReviewRequest, ReviewVerdict } from "./picker.js";
 
 /**
  * The adapter half of the review channel (docs/agent-integration.md

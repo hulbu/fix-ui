@@ -22,7 +22,7 @@
  */
 import { readFile } from "node:fs/promises";
 
-import { findDiscovery, noBridgeNotice, type Discovery } from "./find-discovery";
+import { findDiscovery, noBridgeNotice, type Discovery } from "./find-discovery.js";
 
 /** A subset of vite's `HtmlTagDescriptor`. */
 export interface HtmlTag {

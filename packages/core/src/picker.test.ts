@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ConsoleError, FeedbackEntry } from "./entry";
-import { createPicker, type Picker, type PickerOptions, type ReviewVerdict } from "./picker";
-import type { Transport } from "./transport";
+import type { ConsoleError, FeedbackEntry } from "./entry.js";
+import { createPicker, type Picker, type PickerOptions, type ReviewVerdict } from "./picker.js";
+import type { Transport } from "./transport.js";
 
 const NS = "data-uifb";
 const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast],[${NS}-banner]`;

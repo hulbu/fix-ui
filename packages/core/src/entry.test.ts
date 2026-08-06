@@ -7,7 +7,7 @@ import {
   validateEntry,
   type ConsoleError,
   type FeedbackEntry,
-} from "./entry";
+} from "./entry.js";
 
 const validEntry: FeedbackEntry = {
   v: 1,

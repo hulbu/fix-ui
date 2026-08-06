@@ -3,7 +3,7 @@ import {
   MAX_CONSOLE_MESSAGE,
   MAX_CONSOLE_SOURCE,
   type ConsoleError,
-} from "./entry";
+} from "./entry.js";
 
 /**
  * Deduped ring buffer of page errors (docs/capture-format.md): the last few

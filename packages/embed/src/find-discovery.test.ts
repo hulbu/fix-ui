@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { DISCOVERY_FILE, findDiscovery, parseDiscovery } from "./find-discovery";
+import { DISCOVERY_FILE, findDiscovery, parseDiscovery } from "./find-discovery.js";
 
 /**
  * Real directories with real marker files. The whole point of the walk is which
