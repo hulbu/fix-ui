@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes when you push a version tag:
+#
+#   npm version patch --workspace fixui   # or minor / major
+#   git push --follow-tags
+#
+# Authentication is OIDC trusted publishing — GitHub proves this workflow's
+# identity to npm at run time. There is no NPM_TOKEN secret to leak, rotate, or
+# print into a log, and it satisfies the account's 2FA requirement without an
+# interactive one-time code.
+#
+# One-time setup on npmjs.com → the `fixui` package → Settings → Trusted
+# Publisher: repository `hulbu/fix-ui`, workflow `release.yml`.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC — without it npm cannot verify the run
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      # The gate runs before publishing, not after. A tag that fails here
+      # publishes nothing, which is the entire point of automating this.
+      - run: pnpm -r typecheck
+      - run: pnpm -r --filter '!e2e' test
+      - run: pnpm --filter e2e exec playwright install --with-deps chromium
+      - run: pnpm --filter e2e test
+
+      - run: pnpm publish --no-git-checks
+        working-directory: packages/fixui
