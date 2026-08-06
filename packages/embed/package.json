@@ -1,6 +1,6 @@
 {
   "name": "@hulbu/fixui",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Point at any UI element in your running app and leave a note for your coding agent.",
   "keywords": [
     "fix-ui",
