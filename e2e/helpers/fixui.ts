@@ -19,6 +19,10 @@ export const TOAST = "[data-uifb-toast]";
 export const BANNER = "[data-uifb-banner]";
 export const APPROVE = "[data-uifb-approve]";
 export const CHANGES = "[data-uifb-changes]";
+/** A session's one button — the whole of what the banner asks for. */
+export const SUBMIT = "[data-uifb-submit]";
+/** The note count on the chip. Absent entirely when the inbox is empty. */
+export const BADGE = "[data-uifb-badge]";
 
 export const test = base.extend<{ bridge: Bridge }>({
   bridge: async ({}, use) => {
@@ -118,11 +122,27 @@ export async function pickAndNote(page: Page, selector: string, note: string): P
   await page.locator(NOTE).fill(note);
   await page.locator(SAVE).click();
   await expect(page.locator(POP)).toHaveCount(0);
-  await expect(page.locator(TOAST).filter({ hasText: "Saved" })).toBeVisible();
+  // `.last()`: toasts stack for a couple of seconds, so leaving several notes
+  // in a row (which is the whole gesture a session is built around) leaves more
+  // than one "Saved" on screen. The newest is the reply to what just happened.
+  await expect(page.locator(TOAST).filter({ hasText: "Saved" }).last()).toBeVisible();
+}
+
+/**
+ * The agent resolving an entry. `resolve_feedback` is this exact call in proxy
+ * mode (mcp.ts `httpTools`), which is the only mode an agent harness ever gets
+ * — so this is the agent's own hand, not a shortcut around it.
+ */
+export async function resolveFeedback(bridge: Bridge, id: string): Promise<void> {
+  const query = `?project=${encodeURIComponent(bridge.project)}`;
+  const res = await fetch(`${bridge.url}/entries/${encodeURIComponent(id)}${query}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`DELETE /entries/${id} answered ${res.status}`);
 }
 
 export interface ReviewOutcome extends JsonRecord {
-  verdict: "approved" | "changes" | "timeout" | "no-reviewer";
+  verdict: "approved" | "changes" | "submitted" | "timeout" | "no-reviewer";
   entries: JsonRecord[];
   durationMs: number;
 }
@@ -142,7 +162,14 @@ export interface HeldReview {
  */
 export function requestReview(
   bridge: Bridge,
-  body: { prompt: string; url?: string; surfaceId?: string; timeoutSeconds?: number },
+  body: {
+    prompt: string;
+    url?: string;
+    surfaceId?: string;
+    timeoutSeconds?: number;
+    /** `session` is what `start_fix_ui_session` posts — the Submit banner. */
+    mode?: "review" | "session";
+  },
 ): HeldReview {
   let settled = false;
   const outcome = fetch(`${bridge.url}/reviews`, {
