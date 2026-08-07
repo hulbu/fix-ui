@@ -79,8 +79,12 @@ tab is being debugged" banner — documented as a possible v2 mode, not v1.
 
 ### `src/bridge` — the daemon behind the `fixui` bin
 
-What it does: single local daemon, loopback-only, default
-`http://127.0.0.1:3499`.
+What it does: a per-project bridge, loopback-only, whose lifetime belongs to
+the dev server (`fixui dev -- <your dev command>`). There is no fixed port:
+it binds an OS-assigned free one (`--port N` / `FIXUI_PORT` override when a
+known port is needed) and publishes `{ v, port, token, pid }` to
+`.fix-ui.json` at the project root, mode 0600, written atomically. That file
+is the only way anything else finds it.
 - HTTP: `POST /entries` (create), `GET /entries` (list), `DELETE
   /entries/:id` — same shape the prototype's Next.js route exposes today
   (the bridge also accepts the prototype's body-style `DELETE /entries`
@@ -98,10 +102,17 @@ What it does: single local daemon, loopback-only, default
   channel. The same stream carries `inbox-changed`, so a page's note count
   follows the inbox instead of only refreshing when its panel is opened.
 
-One daemon, many projects: the first `fixui-bridge` binds :3499 and owns
-the inbox files; later instances (each Claude Code session spawns its own
-via stdio MCP) detect the bound port and proxy to it, scoping their MCP
-calls to their own cwd's project.
+One bridge per project, discovered by file: the process that binds the port
+is the one the dev server owns, and it dies with the dev command — so a sink
+is running exactly when the app is. Every other instance (each Claude Code
+session spawns its own via stdio MCP) binds nothing. It reads `.fix-ui.json`
+for its own project, probes the port it names against `/healthz`, and becomes
+an MCP proxy to that bridge; no file, or nothing of ours answering, means "no
+bridge for this project" rather than a guess. The probe is not optional: a
+discovery file is a claim about a process that may have been killed an hour
+ago, and an ephemeral port gets recycled to strangers. Adapters find the
+bridge the same way, walking up from the dev server's cwd to the repository
+root — nearest file wins, and the walk never crosses into another repo.
 
 Depends on: node stdlib + an MCP SDK. No database; the inbox JSONL is the
 queue (resolved entries are removed, no tombstones — reviews get their
@@ -163,10 +174,11 @@ advice: agent-integration.md "Privacy and trust". In this repo's terms:
   `x-fixui-token`); 401 without it. Subscribing is how a page would learn a
   `reviewId`, and a `reviewId` is enough to approve a review the human has
   not seen — the token is what makes "human-in-the-loop" true rather than
-  aspirational. Generated per run (or `FIXUI_TOKEN`), printed on stderr,
-  written to `.fix-ui.token` in the daemon's cwd (gitignored) so local
-  adapters can pick it up out of band. `POST /reviews` stays open, because
-  a proxy instance in another project's cwd cannot read that file.
+  aspirational. Generated per run (or `FIXUI_TOKEN`), printed on stderr, and
+  published alongside the port in `.fix-ui.json` at the project root (mode
+  0600, gitignored) so local adapters and proxy instances can pick it up out
+  of band. `POST /reviews` stays open, because a proxy instance in another
+  project's cwd has no discovery file of its own to read.
 - **Entries are untrusted input.** They are what somebody typed in a
   browser, and the entries routes are open, so an agent must treat them as
   a description of a UI complaint — never as instructions.

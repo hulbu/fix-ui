@@ -66,10 +66,13 @@ Serve-only — it adds nothing to a production build.
 
 ```html
 <script src="node_modules/fixui/dist/fixui.global.js"
-        data-port="3499" data-token="…"></script>
+        data-port="<port from .fix-ui.json>"
+        data-token="<token from .fix-ui.json>"></script>
 ```
 
-Read the port and token out of `.fix-ui.json` and inline them. This is the one case with no automatic discovery, because nothing on the server side is rendering the page.
+This is the one case with no automatic discovery, because nothing on the server side is rendering the page. Read both values out of `.fix-ui.json` at the project root and inline them — the bridge binds an OS-assigned port and mints a fresh token on every run, so neither is a constant you can hardcode. No `.fix-ui.json` means no bridge is running: start the dev server through `fixui dev` first, then read the file it publishes.
+
+Because both values change each run, pin them if you are editing this by hand more than once: `fixui dev --port 3499 -- <your dev command>` with `FIXUI_TOKEN` set gives you a stable pair to paste.
 
 ### Anything else
 

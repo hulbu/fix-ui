@@ -16,7 +16,7 @@ This installs the package, registers an MCP server, drops a skill into `.claude/
 
 ## 2. Finish what it could not
 
-If it printed an adapter table, it did not recognise the stack. Read `.claude/skills/fix-ui/adapters.md` and make the two edits yourself.
+**Skip this entire section if `init` reported it finished everything — go straight to step 3.** What follows is only for the case where it printed an adapter table, which means it did not recognise the stack. Then: read `.claude/skills/fix-ui/adapters.md` and make the two edits yourself.
 
 **Edit one — the bridge's lifetime.** In the root `package.json`, wrap the dev script:
 
@@ -33,7 +33,7 @@ Without this there is no bridge, and notes queue in the browser instead of reach
 | Next (app router) | `app/layout.tsx`, inside `<body>` | `<FixUiScript />` from `fixui/next` |
 | Next (pages router) | `pages/_app.tsx` | `<FixUi />` from `fixui/react` |
 | Vite / Astro / SvelteKit | `vite.config.*` | `fixui()` in `plugins` |
-| Plain HTML | the page | `<script src="node_modules/fixui/dist/fixui.global.js" data-port … data-token …>` |
+| Plain HTML | the page | `<script src="node_modules/fixui/dist/fixui.global.js" data-port … data-token …>` — read both out of `.fix-ui.json`; there is no fixed port |
 | Anything else | a dev-only entry | `initFixUi()` from `fixui` |
 
 Next also needs `transpilePackages: ["fixui"]` in `next.config.*`.

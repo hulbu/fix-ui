@@ -266,11 +266,12 @@ extension alike):
 
   Once it is on npm that becomes `claude mcp add fixui -- npx fixui`.
 - `list_surfaces` is the one tool whose HTTP route is token-gated, which a
-  **proxy** instance cannot always satisfy: it has no way to read a daemon's
-  `.fix-ui.token` in another project. It uses `FIXUI_TOKEN` when both
-  processes share one, else the token file in its own cwd (the daemon runs in
-  this same project — two sessions on one repo). With neither, the tool says
-  so rather than reporting an empty browser.
+  **proxy** instance cannot always satisfy: it has no way to read a bridge's
+  `.fix-ui.json` in another project. It uses `FIXUI_TOKEN` when both
+  processes share one, else the token in its own project's `.fix-ui.json`
+  (the normal case — the dev server for this repo published it). With
+  neither — a bridge named by hand with `--port` and no shared `FIXUI_TOKEN`
+  — the tool says so rather than reporting an empty browser.
 - The inbox path follows the project: bridge resolves the target project
   from the adapter's wire-level `project` field (the embed passes
   `initFixUi({ project })` when set; the extension's options page maps
@@ -318,9 +319,10 @@ things bound that, and none of them is CORS:
   header) and answer 401 without. Subscribing is how a page would learn a
   `reviewId`, and a `reviewId` is all it takes to approve a review before
   the human ever saw it — the token is what keeps the human in the loop.
-  The daemon generates one per run (or takes `FIXUI_TOKEN`), prints it on
-  stderr next to its URL, and writes it to `.fix-ui.token` in its working
-  directory (gitignored). Adapters get it out of band: the extension's
+  The bridge generates one per run (or takes `FIXUI_TOKEN`), prints it on
+  stderr next to its URL, and publishes it alongside the port in
+  `.fix-ui.json` at the project root (mode 0600, gitignored). Adapters get it
+  out of band: the extension's
   options page has a field for it, the embed takes
   `initFixUi({ token })`, and a page cannot read the file — so an embed
   with no token is simply bridge-less for the review direction, which is a

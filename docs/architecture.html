@@ -445,7 +445,7 @@
     </p>
     <div class="masthead-meta">
       <span><b>Runs on</b> your machine only</span>
-      <span><b>Default port</b> 127.0.0.1:3499</span>
+      <span><b>Bridge port</b> OS-assigned, published in .fix-ui.json</span>
       <span><b>Inbox</b> .fix-ui.jsonl</span>
     </div>
   </header>
@@ -642,40 +642,56 @@
     <h3>What happens with three Claude Code sessions open</h3>
     <div class="col">
       <p>
-        Each session spawns its own bridge process. They cannot all own port 3499,
-        and you would not want three processes writing the same files. So they
-        arbitrate:
+        None of them binds a port. The one process that listens is the one your
+        dev server owns — <code>fixui dev -- &lt;your dev command&gt;</code> — which
+        takes an OS-assigned free port and publishes it. Every session then
+        <em>looks the bridge up</em> rather than racing for it:
       </p>
     </div>
 
     <figure>
-      <figcaption>Daemon or proxy — decided at startup, no configuration</figcaption>
+      <figcaption>Owner or proxy — decided by a file, not by who got there first</figcaption>
       <div class="fig-body">
-<pre>process starts
+<pre><b>fixui dev</b> (the dev server's wrapper)
   │
-  ├─ <span class="a">binds :3499 successfully</span>
-  │     └─▶ <b>DAEMON</b> — owns the inbox files, the review broker,
-  │           the SSE subscribers and the token.
+  └─▶ <span class="a">binds port 0 — the OS picks a free one</span>
+        └─▶ <b>OWNER</b> — writes <span class="k">.fix-ui.json</span> {v, port, token, pid}
+              at the project root, mode 0600, atomically.
+              Owns the inbox files, the review broker, the SSE
+              subscribers and the token. Dies with the dev command,
+              and deletes the file on the way out.
+
+<b>a Claude Code session</b> (stdio MCP), <b>or an adapter in the page</b>
   │
-  └─ <span class="k">port already in use</span>
-        │
-        ├─ probes <span class="k">GET /healthz</span> → is it one of ours?
+  ├─ reads <span class="k">.fix-ui.json</span> for its own project
+  │     (adapters walk up to the repository root; nearest wins)
+  │
+  ├─ <span class="k">no file</span> ─▶ <b>NO BRIDGE</b> — that is the whole diagnosis.
+  │            Start the dev server; notes queue in the browser
+  │            until one appears, and flush when it does.
+  │
+  └─ probes <span class="k">GET /healthz</span> on the port it names → is it one of ours?
         │
         ├─ <span class="a">yes</span> ─▶ <b>PROXY</b> — still serves MCP on its own stdio,
         │            but forwards every tool call over HTTP to the
-        │            daemon, scoped to its own project directory.
+        │            owner, scoped to its own project directory.
         │
-        └─ <span class="k">no</span>  ─▶ exits with an error. Something else has :3499.</pre>
+        └─ <span class="k">no</span>  ─▶ <b>NO BRIDGE</b>. The file was a stale claim about a
+                   dead process, and ephemeral ports get recycled to
+                   strangers — so an unrecognised answer is never trusted.</pre>
       </div>
     </figure>
 
     <div class="col">
       <p>
-        The upshot: one daemon serves every project on the machine, and each
-        session's own process makes sure its tool calls land against the right
-        directory. You never think about it — but it's why the second session
-        doesn't crash, and why you can have one browser tab open against two
-        different projects.
+        The upshot: one bridge <em>per project</em>, not one per machine, and its
+        lifetime is the dev server's — so a sink is running exactly when the app
+        is. Three sessions on the same project all proxy to the same owner; a
+        session on a different project finds that project's own file. You never
+        think about it, and there is no port to configure. When you do need a
+        known port — the Chrome extension has to be pointed at a URL by hand —
+        <code>--port N</code> or <code>FIXUI_PORT</code> pins one, and
+        <code>FIXUI_TOKEN</code> pins the token that otherwise changes every run.
       </p>
     </div>
   </section>
@@ -778,12 +794,14 @@ chrome://extensions → Developer mode ON → Load unpacked → pick <span class
 
 <span class="c">3 · start the bridge in the project you want fixed</span>
 cd ~/my-app && make -C ~/fix-ui run PROJECT=$PWD
+<span class="c">   the `run` target passes --port 3499 on purpose: the extension needs a</span>
+<span class="c">   URL you can type. Left to itself the bridge takes an OS-assigned port.</span>
 <span class="c">   → prints:  listening on http://127.0.0.1:3499</span>
-<span class="c">   → prints:  review token: d1G2K-jRF79… (also in .fix-ui.token)</span>
+<span class="c">   → publishes .fix-ui.json — {v, port, token, pid}, mode 0600</span>
 
 <span class="c">4 · point the extension at it — right-click the icon → Options</span>
 Bridge URL     http://127.0.0.1:3499
-Review token   <span class="c">paste from .fix-ui.token</span>
+Review token   <span class="c">the "token" field of .fix-ui.json (or pin it with FIXUI_TOKEN)</span>
 Origins → projects
                http://localhost:3000=/Users/you/my-app
                https://staging.example.com=/Users/you/my-app</pre>
@@ -851,7 +869,7 @@ Origins → projects
       <div class="gate closed">
         <div class="gate-tag">Closed</div>
         <h4>Review channel needs a token</h4>
-        <p>The daemon mints one per run into <code>.fix-ui.token</code> (mode 0600). Without it, no <code>/events</code> stream and no verdict. So a page can't learn a review id, and can't answer your review.</p>
+        <p>The bridge mints one per run into <code>.fix-ui.json</code> (mode 0600). Without it, no <code>/events</code> stream and no verdict. So a page can't learn a review id, and can't answer your review.</p>
       </div>
       <div class="gate closed">
         <div class="gate-tag">Closed</div>
@@ -861,7 +879,7 @@ Origins → projects
       <div class="gate open">
         <div class="gate-tag">Open, on purpose</div>
         <h4>Anyone can request a review</h4>
-        <p>A proxy instance can't read the daemon's token file, so this route stays ungated. A page can raise a banner with text it chose, and occupy the review slot until timeout. It cannot answer — that needs the token.</p>
+        <p>A proxy instance in another project's cwd has no <code>.fix-ui.json</code> of its own to read the token from, so this route stays ungated. A page can raise a banner with text it chose, and occupy the review slot until timeout. It cannot answer — that needs the token.</p>
       </div>
     </div>
 

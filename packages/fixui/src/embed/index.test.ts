@@ -206,7 +206,7 @@ describe("initFixUi", () => {
   });
 
   /**
-   * The bridge gates its review channel; a page cannot read `.fix-ui.token`, so
+   * The bridge gates its review channel; a page cannot read `.fix-ui.json`, so
    * a dev build has to be handed the token explicitly. Without one the notes
    * half still works and the review half is 401 — the bridge-less experience.
    */

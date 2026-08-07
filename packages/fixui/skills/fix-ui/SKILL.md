@@ -132,8 +132,8 @@ Before telling the human there is nothing there, check in this order:
 
 | Check | How | What it means |
 |---|---|---|
-| Is the bridge running? | `curl -s 127.0.0.1:3499/healthz` | No answer → their note is queued in the browser, not lost. Start the bridge and it flushes. |
-| Right project? | Compare your cwd to the daemon's project line | The daemon writes to the directory it was started in, or the one the adapter names. |
+| Is the bridge running? | Look for `.fix-ui.json` at the project root. **No file means no bridge — that is the diagnosis, stop there.** If it is there, ask the port it names: `port=$(node -p "require('./.fix-ui.json').port") && curl -s 127.0.0.1:$port/healthz` | No file, or no answer on that port → their note is queued in the browser, not lost. Start the dev server through the wrapped script (`npm run dev`, which runs `fixui dev`) and it flushes. |
+| Right project? | Compare your cwd to the project line the bridge printed at startup | The bridge writes to the directory it was started in, or the one the adapter names. |
 | Did the page ever connect? | Their picker shows a badge count | A badge with no file means the POST failed. |
 
 Only after all three: say the inbox is empty, and say **which** project you

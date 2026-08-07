@@ -218,8 +218,9 @@ export interface StoredOptions {
    *  reported rather than silently dropped on save. */
   originMap: string;
   /**
-   * The bridge's review-channel token (it prints one at startup and writes it
-   * to `.fix-ui.token` in its working directory). Without it the daemon answers
+   * The bridge's review-channel token (it prints one at startup and publishes
+   * it, with its port, in `.fix-ui.json` at the project root). Without it the
+   * bridge answers
    * 401 on `GET /events` and on the verdict POST, so the agent-initiated review
    * direction is off and note-taking still works.
    */

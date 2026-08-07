@@ -88,10 +88,10 @@
 
       <fieldset>
         <label for="token">Review token</label>
-        <input id="token" name="token" spellcheck="false" placeholder="paste from .fix-ui.token" />
+        <input id="token" name="token" spellcheck="false" placeholder="paste from .fix-ui.json" />
         <small
-          >The bridge prints this when it starts and writes it to
-          <code>.fix-ui.token</code> in its working directory. It gates the review channel —
+          >The bridge prints this when it starts and publishes it, with its port, in
+          <code>.fix-ui.json</code> at the project root. It gates the review channel —
           without it, notes still work but <code>request_review</code> cannot reach this
           browser.</small
         >

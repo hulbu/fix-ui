@@ -47,8 +47,9 @@ export interface ReviewChannelOptions {
   /** Called once, with the id the bridge assigned this connection. */
   onSurface?: (surfaceId: string) => void;
   /**
-   * The bridge's review token (it prints one at startup and writes it to
-   * `.fix-ui.token` in its own cwd). Without it the daemon answers 401 on both
+   * The bridge's review token (it prints one at startup and publishes it, with
+   * its port, in `.fix-ui.json` at the project root). Without it the bridge
+   * answers 401 on both
    * halves of this channel — any page the developer visits can reach a loopback
    * daemon, and a subscriber that learns a reviewId can answer the review in
    * the human's place. Travels in the query string on purpose: `EventSource`

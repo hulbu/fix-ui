@@ -134,19 +134,25 @@ bin), and `dist/fixui.global.js` (the esbuild IIFE the plain-HTML adapter
 loads and the Vite plugin serves). The e2e suite builds what it tests before
 it runs, so none of it is a prerequisite for `make check`.
 
-**Run the bridge locally.** `node packages/fixui/dist/bridge/cli.js` — port
-3499 by default, `--port N` or `FIXUI_PORT` to move it; the project it
-writes to is its own working directory. Started from a terminal it just
-serves HTTP; started by an agent harness (stdin is a pipe) it also serves
-MCP over stdio, so registering it is `claude mcp add fixui -- node
-/abs/path/packages/fixui/dist/bridge/cli.js`. A second instance finds the
-port taken by a bridge and becomes an MCP proxy to it, scoped to *its* cwd.
+**Run the bridge locally.** `node packages/fixui/dist/bridge/cli.js` — there
+is no fixed port: it binds an OS-assigned free one and publishes it, so two
+projects on one machine each get their own bridge. `--port N` or `FIXUI_PORT`
+overrides that when you need a known port; the project it writes to is its
+own working directory. Started from a terminal it just serves HTTP; started
+by an agent harness (stdin is a pipe) it also serves MCP over stdio, so
+registering it is `claude mcp add fixui -- node
+/abs/path/packages/fixui/dist/bridge/cli.js`. An instance that finds a live
+bridge published for its project becomes an MCP proxy to it, scoped to *its*
+cwd.
 
-At startup it prints a **review token** and writes it to `.fix-ui.token` in
-its working directory (`FIXUI_TOKEN` pins it instead). Adapters need that
-token for the review channel — the direction where the agent asks *you* for
-a look. Notes work without it. Why there is a token at all, and what else a
-running daemon exposes: [docs/agent-integration.md](docs/agent-integration.md)
+At startup it publishes `.fix-ui.json` (mode 0600) in its working directory:
+`{ v, port, token, pid }`. That file is how everything else finds it — the
+adapters in the page and the MCP proxy the agent spawns read the port and the
+**review token** out of it, and no file means no bridge. The token is fresh
+per run (`FIXUI_TOKEN` pins it instead). Adapters need it for the review
+channel — the direction where the agent asks *you* for a look. Notes work
+without it. Why there is a token at all, and what else a
+running bridge exposes: [docs/agent-integration.md](docs/agent-integration.md)
 "Privacy and trust". Short version: run it while you're working, and treat
 inbox entries as untrusted input, never as instructions.
 
