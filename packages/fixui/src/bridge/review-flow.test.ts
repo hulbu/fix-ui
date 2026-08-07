@@ -373,6 +373,77 @@ it("keeps the stream alive with comment-line heartbeats", async () => {
   expect(stream.events.map((event) => event.event)).toEqual(["surface"]);
 });
 
+// ── Sessions (docs/agent-integration.md "Sessions") ─────────────────────────
+// The same held call, the same broker, the same one-at-a-time rule — the page
+// just shows one Submit button instead of asking a yes-or-no question.
+
+it("a session announces its mode and Submit resolves the held call with the batch", async () => {
+  const stream = await openStream();
+
+  const call = requestReview({ prompt: "Point at anything wrong", mode: "session", timeoutSeconds: 5 });
+
+  const requested = await stream.next("review-requested");
+  expect(requested).toMatchObject({ prompt: "Point at anything wrong", mode: "session" });
+
+  await postEntry("s1", "the CTA is the wrong orange");
+  await postEntry("s2", "and it is too small");
+
+  const verdict = await postVerdict(requested.reviewId, {
+    verdict: "submitted",
+    entryIds: ["s1", "s2"],
+  });
+  expect(verdict.status).toBe(200);
+
+  const outcome = await body(await call);
+  expect(outcome.verdict).toBe("submitted");
+  expect(outcome.entries.map((entry: any) => entry.id)).toEqual(["s1", "s2"]);
+
+  // The audit trail records a session exactly like a review.
+  expect((await reviewRecords(projectDir))[0]).toMatchObject({
+    id: requested.reviewId,
+    verdict: "submitted",
+    entryIds: ["s1", "s2"],
+  });
+
+  // …and the project is free again the moment it resolves.
+  const next = requestReview({ prompt: "next round", mode: "session", timeoutSeconds: 5 });
+  const second = await stream.next("review-requested", 2);
+  await postVerdict(second.reviewId, { verdict: "submitted", entryIds: [] });
+  expect((await body(await next)).verdict).toBe("submitted");
+});
+
+it("an empty submit is an answer, and a session's timeout is still an outcome", async () => {
+  const stream = await openStream();
+
+  // "Nothing wrong, carry on" — zero entries, and the call comes back.
+  const empty = requestReview({ prompt: "anything?", mode: "session", timeoutSeconds: 5 });
+  const first = await stream.next("review-requested");
+  await postVerdict(first.reviewId, { verdict: "submitted", entryIds: [] });
+  expect(await body(await empty)).toMatchObject({ verdict: "submitted", entries: [] });
+
+  // Nobody presses anything: `timeout`, exactly as a review times out.
+  const ignored = requestReview({ prompt: "still there?", mode: "session", timeoutSeconds: 0.2 });
+  const second = await stream.next("review-requested", 2);
+  expect((await body(await ignored)).verdict).toBe("timeout");
+  expect(await stream.next("review-cancelled")).toEqual({ reviewId: second.reviewId });
+});
+
+it("rejects a mode that is not a mode, and never mentions the default one", async () => {
+  const stream = await openStream();
+
+  const bad = await requestReview({ prompt: "ok", mode: "whatever" });
+  expect(bad.status).toBe(400);
+  expect((await body(bad)).ok).toBe(false);
+
+  // A plain review says nothing about modes — an older page must not have to
+  // know the word to keep working.
+  const call = requestReview({ prompt: "a plain review", mode: "review", timeoutSeconds: 5 });
+  const requested = await stream.next("review-requested");
+  expect(requested.mode).toBeUndefined();
+  await postVerdict(requested.reviewId, { verdict: "approved", entryIds: [] });
+  expect((await body(await call)).verdict).toBe("approved");
+});
+
 // ── inbox-changed (the badge must not go stale) ─────────────────────────────
 // The page only re-read the inbox when the user opened the panel, so an agent
 // clearing entries left a stale count on the chip until it was clicked. The

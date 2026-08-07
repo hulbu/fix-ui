@@ -170,6 +170,7 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
     "list_surfaces",
     "request_review",
     "resolve_feedback",
+    "start_fix_ui_session",
   ]);
   // The workflow has to be in the descriptions: an agent only learns to
   // enumerate pages from the tool that answered `no-reviewer`.
@@ -177,6 +178,14 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
   expect(byName.get("request_review")!.description).toContain("list_surfaces");
   expect(byName.get("request_review")!.inputSchema.properties).toHaveProperty("surfaceId");
   expect(byName.get("list_surfaces")!.description).toMatch(/no-reviewer/);
+  // A session is a LOOP, and the tool description is where an agent learns it —
+  // the author's complaint was that it did not do this today.
+  const session = byName.get("start_fix_ui_session")!;
+  expect(session.description).toMatch(/submit/i);
+  expect(session.description).toMatch(/again/i);
+  expect(session.description).toMatch(/resolve_feedback/);
+  expect(session.inputSchema.properties).toHaveProperty("surfaceId");
+  expect(session.inputSchema.required).toBeUndefined(); // a session needs no prompt
   for (const tool of tools.tools) {
     expect(typeof tool.description).toBe("string");
     expect(tool.inputSchema.type).toBe("object");
@@ -338,6 +347,72 @@ it("keeps a held request_review alive with progress notifications until it resol
 });
 
 /**
+ * `start_fix_ui_session` is `request_review`'s sibling on the same broker: the
+ * call blocks, the page arms itself, and Submit answers it with the batch. What
+ * differs is the tool's own name and description, which is where an agent
+ * learns that this one is a loop.
+ */
+it("start_fix_ui_session blocks on the page, aims like a review, and answers with the batch", async () => {
+  const dir = await tempProject();
+  const broker = createReviewBroker();
+  const page = fakeSurface(broker, dir, { label: "the only window", adapter: "embed" });
+  const client = await linkedTools(inProcessTools(broker, dir));
+
+  try {
+    const call = client.callTool({
+      name: "start_fix_ui_session",
+      arguments: { surfaceId: page.id(), timeoutSeconds: 5 },
+    });
+    await waitUntil(() => page.events.includes("review-requested"), "the page to be armed");
+    // The page is told which banner to draw, and a session needs no prompt from
+    // the agent — the human already knows what they asked for.
+    expect(page.requested()).toMatchObject({ mode: "session" });
+    expect(typeof page.requested().prompt).toBe("string");
+
+    await broker.submitVerdict(page.reviewId(), "submitted", []);
+    expect(JSON.parse(((await call) as any).content[0].text)).toEqual({
+      verdict: "submitted",
+      entries: [],
+      durationMs: expect.any(Number),
+    });
+
+    // Same one-at-a-time rule, same no-reviewer: nothing about the wire moved.
+    page.close();
+    expect(await callJson(client, "start_fix_ui_session", {})).toEqual({
+      verdict: "no-reviewer",
+      entries: [],
+      durationMs: 0,
+    });
+  } finally {
+    page.close();
+    broker.stop();
+  }
+});
+
+it("proxy mode: start_fix_ui_session forwards the session over HTTP", async () => {
+  const dir = await tempProject();
+  const bridge = createBridgeServer({ port: 0, defaultProject: dir });
+  await bridge.start();
+  const page = fakeSurface(bridge.broker, dir, { adapter: "embed" });
+
+  try {
+    const client = await linkedTools(httpTools(`http://127.0.0.1:${bridge.port}`, dir));
+    const call = client.callTool({
+      name: "start_fix_ui_session",
+      arguments: { prompt: "anything broken?", timeoutSeconds: 5 },
+    });
+    await waitUntil(() => page.events.includes("review-requested"), "the page to be armed");
+    expect(page.requested()).toMatchObject({ mode: "session", prompt: "anything broken?" });
+
+    await bridge.broker.submitVerdict(page.reviewId(), "submitted", []);
+    expect(JSON.parse(((await call) as any).content[0].text).verdict).toBe("submitted");
+  } finally {
+    page.close();
+    await bridge.stop();
+  }
+});
+
+/**
  * The reported bug, at its source: an agent calling `resolve_feedback` on the
  * daemon's own MCP server removed the entry and told nobody — not the pages on
  * the review channel (so the chip's badge kept the old number until it was
@@ -456,23 +531,33 @@ it("proxy mode: cancelling request_review drops the held HTTP call, which frees 
 function fakeSurface(
   broker: ReviewBroker,
   project: string,
-  describe: Record<string, unknown>,
-): { id(): string; events: string[]; reviewId(): string; close(): void } {
+  describe: Record<string, unknown> = {},
+): {
+  id(): string;
+  events: string[];
+  reviewId(): string;
+  requested(): Record<string, unknown>;
+  close(): void;
+} {
   const events: string[] = [];
   let id = "";
   let reviewId = "";
+  let requested: Record<string, unknown> = {};
   const close = broker.subscribe(
     project,
     {
       send: (event, data) => {
         events.push(event);
         if (event === "surface") id = String(data.surfaceId);
-        if (event === "review-requested") reviewId = String(data.reviewId);
+        if (event === "review-requested") {
+          reviewId = String(data.reviewId);
+          requested = data;
+        }
       },
     },
     describe,
   );
-  return { id: () => id, events, reviewId: () => reviewId, close };
+  return { id: () => id, events, reviewId: () => reviewId, requested: () => requested, close };
 }
 
 it("daemon mode: list_surfaces enumerates the connected pages and request_review aims at one", async () => {

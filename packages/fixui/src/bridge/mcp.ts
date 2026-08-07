@@ -26,6 +26,7 @@ import {
   BusyError,
   DEFAULT_TIMEOUT_SECONDS,
   type ReviewBroker,
+  type ReviewMode,
   type ReviewOutcome,
   type Surface,
 } from "./broker.js";
@@ -44,6 +45,9 @@ export interface ReviewToolInput {
   project?: string;
   /** One connected page from `list_surfaces`, instead of all of them. */
   surfaceId?: string;
+  /** `session` draws the Submit banner instead of Approve / Request changes;
+   *  absent is a plain review (docs/agent-integration.md "Sessions"). */
+  mode?: ReviewMode;
   /**
    * The SDK's per-call cancellation — aborted when the client sends
    * `notifications/cancelled`, which is what Esc in Claude Code does.
@@ -139,7 +143,48 @@ const TOOLS: Tool[] = [
       required: ["prompt"],
     },
   },
+  {
+    name: "start_fix_ui_session",
+    description:
+      "Start a fix-ui session: the connected page arms itself and shows a single Submit button, " +
+      "and this call BLOCKS until the human presses it. Use it when they ask to 'start a fix ui " +
+      "session', 'let's do a fix ui session', or otherwise say they want to point at things while " +
+      "you stand by. Returns { verdict: submitted | timeout | no-reviewer, entries, durationMs }; " +
+      "`entries` is the batch of notes they left, and an EMPTY batch is a real answer (\"nothing " +
+      "wrong, carry on\"), not an error. " +
+      "This is a LOOP, not one batch: fix every entry, resolve_feedback each one you actually " +
+      "fixed, then call start_fix_ui_session AGAIN for the next batch. Keep going until the human " +
+      "says stop or a session times out — returning to the terminal after a single batch is the " +
+      "mistake to avoid. Sessions are one-at-a-time per project like reviews (`busy`), and " +
+      "surfaceId aims at one page the same way. Use request_review instead when you want a " +
+      "yes-or-no on a specific change you just made.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "Optional line for the session banner — what you are standing by for. The human " +
+            "asked for the session, so a default is fine.",
+        },
+        url: { type: "string", description: "Page the session should run on; the page navigates." },
+        surfaceId: {
+          type: "string",
+          description: "One page from list_surfaces, when several could be meant.",
+        },
+        timeoutSeconds: {
+          type: "number",
+          description: `How long to stand by (default ${DEFAULT_TIMEOUT_SECONDS}).`,
+        },
+        project: PROJECT_PROPERTY,
+      },
+    },
+  },
 ];
+
+/** What the banner says when the agent supplied nothing: the human started this
+ *  session, so the tool has no business demanding they be told what it is. */
+const DEFAULT_SESSION_PROMPT = "Point at anything that needs fixing, then press Submit.";
 
 class ToolError extends Error {}
 
@@ -197,8 +242,17 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
             ),
           );
 
-        case "request_review": {
-          const input: ReviewToolInput = { prompt: filledString(args.prompt, "prompt") };
+        // One held call, two banners. Everything below — targeting, the
+        // timeout, the keep-alive ticker, cancellation — is the same for both;
+        // only the mode, and what the prompt is allowed to be, differ.
+        case "request_review":
+        case "start_fix_ui_session": {
+          const session = request.params.name === "start_fix_ui_session";
+          const asked = optionalString(args.prompt, "prompt")?.trim();
+          const input: ReviewToolInput = session
+            ? { prompt: asked === undefined || asked === "" ? DEFAULT_SESSION_PROMPT : asked }
+            : { prompt: filledString(args.prompt, "prompt") };
+          if (session) input.mode = "session";
           const url = optionalString(args.url, "url");
           if (url !== undefined) input.url = url;
           if (args.timeoutSeconds !== undefined) {
@@ -369,6 +423,7 @@ export function inProcessTools(
         prompt: input.prompt,
         ...(input.url === undefined ? {} : { url: input.url }),
         ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
         timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
         // Esc in the client frees the project and stands the banner down, the
         // same way a dead agent's dropped socket does over HTTP.
@@ -465,6 +520,7 @@ export function httpTools(baseUrl: string, defaultProject: string, token?: strin
           prompt: input.prompt,
           ...(input.url === undefined ? {} : { url: input.url }),
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
+          ...(input.mode === undefined ? {} : { mode: input.mode }),
           ...(input.timeoutSeconds === undefined ? {} : { timeoutSeconds: input.timeoutSeconds }),
           project: input.project ?? defaultProject,
         },

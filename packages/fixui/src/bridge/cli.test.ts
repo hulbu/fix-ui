@@ -205,6 +205,7 @@ it("an agent-spawned bridge with no live owner answers tools with an actionable 
     "list_surfaces",
     "request_review",
     "resolve_feedback",
+    "start_fix_ui_session",
   ]);
 
   for (const [name, args] of [
@@ -212,6 +213,7 @@ it("an agent-spawned bridge with no live owner answers tools with an actionable 
     ["list_surfaces", {}],
     ["resolve_feedback", { id: "whatever" }],
     ["request_review", { prompt: "look at the hero" }],
+    ["start_fix_ui_session", {}],
   ] as const) {
     const result = await call(client, name, args);
     expect(result.isError, name).toBe(true);

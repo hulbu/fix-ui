@@ -604,6 +604,14 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
       });
     }
 
+    // Refused rather than defaulted: a mode nobody recognises means the caller
+    // wanted a banner this bridge cannot raise, and quietly giving it the other
+    // one would put the wrong buttons in front of the human.
+    const mode = body.mode;
+    if (mode !== undefined && mode !== "review" && mode !== "session") {
+      return ctx.json(400, { ok: false, error: 'mode must be "review" or "session"' });
+    }
+
     const project = resolveProject(body.project, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
@@ -622,6 +630,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
         prompt: body.prompt,
         ...(typeof body.url === "string" ? { url: body.url } : {}),
         ...(surfaceId === undefined ? {} : { surfaceId: surfaceId.slice(0, MAX_SURFACE_ID) }),
+        ...(mode === "session" ? { mode } : {}),
         timeoutSeconds: timeout ?? DEFAULT_TIMEOUT_SECONDS,
         signal: agentGone.signal,
       });
@@ -645,9 +654,17 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     const body = await readJsonRecord(ctx.req);
     if (!body) return ctx.json(400, { ok: false, error: "expected a JSON object body" });
 
+    // `submitted` is a session's only answer (the page's one Submit button); the
+    // other two are a review's. Which one is legitimate is not re-checked here:
+    // the page already draws exactly one set of buttons, and anything that can
+    // post to this route holds the token, at which point it can answer the
+    // review outright — the mode would not be what stopped it.
     const verdict = body.verdict;
-    if (verdict !== "approved" && verdict !== "changes") {
-      return ctx.json(400, { ok: false, error: 'verdict must be "approved" or "changes"' });
+    if (verdict !== "approved" && verdict !== "changes" && verdict !== "submitted") {
+      return ctx.json(400, {
+        ok: false,
+        error: 'verdict must be "approved", "changes" or "submitted"',
+      });
     }
 
     const entryIds = body.entryIds;

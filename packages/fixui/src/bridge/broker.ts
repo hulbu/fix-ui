@@ -27,9 +27,22 @@ export const DEFAULT_TIMEOUT_SECONDS = 600;
  *  timeout. Clamping to ~24 days is indistinguishable from "forever" here. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
-export type ReviewVerdict = "approved" | "changes" | "timeout" | "no-reviewer";
-/** The two a human can send; `timeout` and `no-reviewer` are the bridge's own. */
-export type HumanVerdict = "approved" | "changes";
+/**
+ * Which banner the page draws, and therefore which answer comes back
+ * (docs/agent-integration.md "Sessions").
+ *
+ * `review` asks a yes-or-no question about a change the agent just made.
+ * `session` is the batched, human-led mode: the agent stands by while the user
+ * points at as many things as they like, and one Submit hands the batch over.
+ * Everything else — the held call, the timeout, `busy`, surface targeting — is
+ * the same machinery, which is the whole reason it is a mode and not a second
+ * channel.
+ */
+export type ReviewMode = "review" | "session";
+
+export type ReviewVerdict = "approved" | "changes" | "submitted" | "timeout" | "no-reviewer";
+/** The three a human can send; `timeout` and `no-reviewer` are the bridge's own. */
+export type HumanVerdict = "approved" | "changes" | "submitted";
 
 export interface ReviewOutcome {
   verdict: ReviewVerdict;
@@ -73,6 +86,9 @@ export interface ReviewRequest {
   prompt: string;
   url?: string;
   timeoutSeconds: number;
+  /** Absent means `review`, and the page is never told about that one: a build
+   *  that has never heard of modes must keep working unchanged. */
+  mode?: ReviewMode;
   /**
    * Aim the review at ONE connected page instead of all of the project's
    * (docs/agent-integration.md "Surfaces"). An id that is unknown, gone, or on
@@ -215,6 +231,9 @@ export function createReviewBroker(): ReviewBroker {
       reviewId: review.id,
       prompt: review.prompt,
       ...(review.url === undefined ? {} : { url: review.url }),
+      // Stated only when it is not the default: an older page ignores what it
+      // does not know, and a newer one reads its absence as "a review".
+      ...(review.mode === "session" ? { mode: review.mode } : {}),
       timeoutSeconds: review.timeoutSeconds,
     };
   }
