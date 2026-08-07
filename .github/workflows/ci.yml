@@ -1,8 +1,12 @@
 name: CI
 
+# Every pull request, and every push to a long-lived branch. `main` also has
+# release.yml, which reruns this gate before publishing — deliberately, so a
+# release is never trusted to a check that ran on a different tree.
+
 on:
   push:
-    branches: [main]
+    branches: [main, development]
   pull_request:
 
 jobs:
@@ -20,7 +24,8 @@ jobs:
       - run: pnpm -r typecheck
       - run: pnpm -r --filter '!e2e' test
 
-      # The browser suite is the only place cascade and top-layer behaviour can
-      # be proven — a unit test can assert a rule exists, not that it wins.
+      # The browser suite is the only place cascade, top-layer and pointer
+      # behaviour can be proven — a unit test can assert a rule exists, not
+      # that it wins.
       - run: pnpm --filter e2e exec playwright install --with-deps chromium
       - run: pnpm --filter e2e test
