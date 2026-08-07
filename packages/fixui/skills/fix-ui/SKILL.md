@@ -1,6 +1,6 @@
 ---
 name: fix-ui
-description: Use when the user says "fix ui", mentions notes or feedback left on a page, points at something visually wrong in a running app, or when you have just changed UI and are about to report it done
+description: Use when the user says "fix ui", asks to start a fix-ui session, mentions notes or feedback left on a page, points at something visually wrong in a running app, or when you have just changed UI and are about to report it done
 ---
 
 # fix-ui
@@ -14,6 +14,14 @@ ask for eyes before claiming it works.
 **Core principle: a UI change is not done until a human has looked at it.** You
 cannot see the page. `request_review` is how you borrow their eyes, and it is the
 only thing that closes the loop.
+
+Three loops live here, and they are not interchangeable:
+
+| Loop | Who starts it | Tool |
+|---|---|---|
+| The inbox | notes already left | `list_feedback` / `resolve_feedback` |
+| Review | you, after changing UI | `request_review` |
+| Session | the user, saying "start a fix ui session" | `start_fix_ui_session` |
 
 ## First run: is the picker wired in?
 
@@ -59,6 +67,64 @@ stopping after one is the most common way to get this wrong.
 Reviews are one-at-a-time per project. A `busy` error means a review is already
 pending — wait for it, never start a second.
 
+## The session loop
+
+A **session** is the other direction of the same channel: instead of asking
+about one change you made, you stand by while the human walks their own UI and
+points at whatever they find. The page shows one button — **Submit** — and your
+call blocks until they press it.
+
+### How the user asks for one
+
+Treat any of these as "start a session", with no clarifying question:
+
+- "start a fix ui session" / "let's do a fix ui session"
+- "init ui fixing session" / "start a ui fixing session"
+- "fix ui session mode" / "go into fix ui session mode"
+- "I'll point at things, you fix them" / "stand by while I go through the UI"
+
+Anything of that shape means `start_fix_ui_session()`. `fix ui` on its own is
+still the inbox loop above — the difference is that a session says *start*,
+*mode*, or *I will point at things*, i.e. the user is about to go looking rather
+than telling you about notes they already left.
+
+### The loop itself
+
+```
+start_fix_ui_session()          ← say the session is live, then wait
+        │
+        ├─ submitted  → the entries ARE the batch.
+        │               Fix every one. resolve_feedback(id) each one you
+        │               actually fixed. Then start the NEXT session. Loop.
+        │               (Zero entries is a real answer: "nothing wrong,
+        │                carry on" — still start the next session unless
+        │                they said to stop.)
+        ├─ timeout    → they walked away. Report what you did; do not restart
+        │               a session they are not sitting in front of.
+        └─ no-reviewer→ no page connected. Diagnose (below), then say so.
+```
+
+**A session is not one-shot.** Returning to the terminal after a single batch is
+the failure mode here, exactly as `changes` is not a stopping point for reviews.
+The user activated a mode; it stays active until they end it. Keep looping until
+one of:
+
+- the human says stop / that's it / done,
+- a session comes back `timeout`,
+- or `no-reviewer` says the page is gone.
+
+Between rounds, do the work: fix, resolve, and only then open the next session.
+Do not start a session while you still have unfixed entries from the last one —
+they will still be in the inbox, and the human will be pointing at the same
+things again.
+
+Sessions and reviews share the one-at-a-time rule per project: a `busy` error
+means one is already pending. Never run a session and a review at once.
+
+**Say the session is live before you block.** The user needs to know the page is
+armed and that you are waiting on their Submit — otherwise the terminal just
+looks hung.
+
 ## An empty inbox is a diagnosis, not an answer
 
 **Empty does not mean "nothing to do." It usually means the note never arrived.**
@@ -86,9 +152,11 @@ lives on a specific page; the picker follows it.
 
 - Reporting a UI change done without a review round.
 - Treating `changes` as the end of the task.
+- Treating one submitted batch as the end of a session.
+- Asking "do you want me to start another session?" instead of starting one.
 - Concluding "empty inbox" without checking whether the bridge is up.
 - Resolving entries you did not actually fix, to clear the list.
-- Starting a second review while one is pending.
+- Starting a second review or session while one is pending.
 
 ## Common mistakes
 

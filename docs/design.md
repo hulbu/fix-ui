@@ -92,9 +92,11 @@ What it does: single local daemon, loopback-only, default
   (per-project routing by the wire-level `project` field — see
   capture-format.md — or the bridge's cwd).
 - MCP server for agents: see agent-integration.md.
-- Review broker: holds pending `request_review` calls open and pairs them
-  with a connected adapter over SSE (one-way push is all it needs —
-  verdicts return as plain POSTs) — the human-in-the-loop channel.
+- Review broker: holds pending `request_review` / `start_fix_ui_session`
+  calls open and pairs them with a connected adapter over SSE (one-way push
+  is all it needs — verdicts return as plain POSTs) — the human-in-the-loop
+  channel. The same stream carries `inbox-changed`, so a page's note count
+  follows the inbox instead of only refreshing when its panel is opened.
 
 One daemon, many projects: the first `fixui-bridge` binds :3499 and owns
 the inbox files; later instances (each Claude Code session spawns its own

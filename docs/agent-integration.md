@@ -47,12 +47,16 @@ participate; everything else is convenience:
   notification does not start a turn (see the one fact); it only helps
   harnesses that choose to react. It is sent by the **daemon** — the
   process that owns the port and the inbox files — after an entry is
-  added or removed **over HTTP**, carrying `{ project }`. Two silences to
-  know about: a proxy instance sends none at all (its client is attached to
-  a different process than the one whose inbox changed), and
-  `resolve_feedback` called on the daemon's own MCP server removes the
-  entry without announcing it — the client that asked for the removal is
-  the only one that would hear, and it already knows.
+  added or removed, carrying `{ project }`, whichever door the change came
+  through: the HTTP routes, or `resolve_feedback` on the daemon's own MCP
+  server. One silence to know about: a proxy instance sends none of these
+  (its client is attached to a different process than the one whose inbox
+  changed), and watches its own project's inbox file instead.
+
+  The same change reaches the **browser** as `inbox-changed` on the review
+  channel (below). That is not a nicety: without it the picker only re-read
+  the inbox when the user opened its panel, so an agent resolving entries
+  left a stale count on the chip until somebody clicked it.
 
 ## Direction 2 — agent → human (`request_review`)
 
@@ -106,7 +110,50 @@ Engineering notes:
   `approved` closes the loop.
 - **One review at a time** per project in v1. A second `request_review`
   while one is pending fails fast with a `busy` tool error — not a verdict
-  (scope discipline; queues are v2).
+  (scope discipline; queues are v2). A session counts as one.
+
+## Sessions — the human-led mode
+
+A **session** is the same held call wearing a different banner. The agent is
+not asking about a change it just made; it is standing by while the human
+walks their own UI and points at whatever they find. The page says a session
+is running and shows exactly **one** button — Submit — and pressing it hands
+the whole batch over at once:
+
+```
+start_fix_ui_session({
+  prompt?:    "what you are standing by for",   // optional: they asked for it
+  url?:       "http://localhost:4001/#pricing",
+  surfaceId?: "…",
+  timeoutSeconds?: 600,
+})
+→ { verdict: "submitted" | "timeout" | "no-reviewer",
+    entries: FeedbackEntry[],   // the batch; [] is a real answer
+    durationMs: number }
+```
+
+Nothing else about the wire moves: same token gating, same one-at-a-time rule
+per project, same timeout as a first-class outcome, same surface targeting,
+same audit record. On the wire it is `mode: "session"` on `POST /reviews`,
+echoed on `review-requested`; the verdict comes back as `submitted`. `mode` is
+stated only when it is *not* the default, so a page that has never heard of
+sessions is unaffected, and a mode a page cannot draw falls back to the review
+banner — a user must never be shown a question they cannot answer.
+
+**Why a sibling tool rather than `request_review({mode})`.** Everything below
+the tool table is shared (it is one switch case). What is not shared is the
+description, and a tool description is the only place an agent learns
+behaviour: a session has to say *call me again after fixing the batch*, and
+that sentence is lost as an enum value inside a tool whose own name says
+`review`. The two also answer with different vocabularies (`submitted` vs
+`approved`/`changes`), and a session needs no prompt, which `request_review`
+requires.
+
+**A session is a loop, not one batch.** Fix every entry, `resolve_feedback`
+each one, then start the next session — until the human says stop or a session
+times out. The skill (`skills/fix-ui/SKILL.md`) names the trigger phrases and
+states the loop; "returning to the terminal after one batch" is called out
+there the same way "`changes` is not a stopping point" is.
 
 ## Surfaces — which page, exactly
 
@@ -169,10 +216,16 @@ extension alike):
   `{ surfaceId }` — **always first**, the id the bridge assigned this
   subscription (a page that never sees one is talking to an older bridge and
   can only be reached by untargeted reviews) — `review-requested`
-  `{ reviewId, prompt, url?, timeoutSeconds }` — the plugin activates itself,
-  banner up, picker armed, navigating/anchoring to `url` when given — and
-  `review-cancelled` `{ reviewId }` (timeout or agent abort; stand the banner
-  down).
+  `{ reviewId, prompt, url?, timeoutSeconds, mode? }` — the plugin activates
+  itself, banner up, picker armed, navigating/anchoring to `url` when given;
+  `mode` is `"session"` or absent (see "Sessions"), and a mode the page does
+  not recognise is drawn as a review — `review-cancelled` `{ reviewId }`
+  (timeout or agent abort; stand the banner down) — and `inbox-changed`
+  `{ project }`, sent to every surface of a project whenever its inbox really
+  changes, by any route or tool. It is a "look again", not a diff: the page
+  re-reads `GET /entries` and repaints its badge (and its panel, if one is
+  open) without the user touching anything. Adapters COALESCE it — an agent
+  resolving five entries is five events and must cost one re-read.
   Comment-line heartbeats every 15s keep the stream alive through
   intermediaries. An UNTARGETED review still pending for that project is
   replayed to every new subscriber the moment it connects: a stream can drop mid-review
@@ -190,8 +243,9 @@ extension alike):
 - Notes dropped during a review are ordinary `POST /entries`; the page
   tracks the ids it created.
 - `POST /reviews/:reviewId/verdict?token=<token>` `{ verdict: "approved" |
-  "changes", entryIds }` — resolves the held MCP call and appends the
-  session record (see capture-format.md).
+  "changes" | "submitted", entryIds }` — resolves the held MCP call and
+  appends the session record (see capture-format.md). `submitted` is a
+  session's only answer, and `entryIds: []` is a legitimate one.
 - **Cancellation.** The agent's side can go away mid-review: the harness
   restarts, or the human presses Esc, which the client sends as
   `notifications/cancelled`. Either ends the review immediately —
@@ -202,8 +256,9 @@ extension alike):
 ## Claude Code specifics
 
 - Bridge registers as a local MCP server, exposing `list_feedback`,
-  `resolve_feedback`, `list_surfaces`, `request_review`. Nothing is
-  published yet, so it is registered from source:
+  `resolve_feedback`, `list_surfaces`, `request_review`,
+  `start_fix_ui_session`. Nothing is published yet, so it is registered from
+  source:
 
   ```bash
   claude mcp add fixui -- node /abs/path/to/fix-ui/packages/fixui/dist/bridge/cli.js

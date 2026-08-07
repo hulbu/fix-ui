@@ -65,7 +65,9 @@ Rules:
 
 ## Review session records (bridge-internal)
 
-`request_review` outcomes are appended to `.fix-ui.reviews.jsonl` for the
-audit trail: `{ id, prompt, verdict, entryIds, requestedAt, resolvedAt }`.
+`request_review` and `start_fix_ui_session` outcomes are appended to
+`.fix-ui.reviews.jsonl` for the audit trail:
+`{ id, prompt, verdict, entryIds, requestedAt, resolvedAt }`, where `verdict`
+is `approved`, `changes`, `submitted` (a session's batch) or `timeout`.
 Agents don't need to read this; it exists so "what did the human approve
 and when" survives the session.

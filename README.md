@@ -41,6 +41,12 @@ Two activation directions, non-negotiable in every adapter:
   **activates itself** on the page — review banner up, picker armed, no
   hunting for the chip. The agent blocks until you approve or request
   changes. Human-in-the-loop, started by the machine.
+- **A session** is the same channel, human-led: say *"start a fix ui
+  session"* and the agent calls `start_fix_ui_session`, the page arms itself
+  with one **Submit** button, and it stands by while you point at as many
+  things as you like. Submit hands the whole batch over; the agent fixes it
+  and opens the next round. The chip's count follows the inbox live, so
+  entries the agent resolves disappear while you watch.
 
 ## Architecture (one core, two adapters, one bridge)
 
@@ -51,7 +57,7 @@ under `packages/fixui/src`:
 |---------|------------|
 | `src/core` | Picker, selector builder, entry schema, transport client. No DOM ownership opinions — adapters decide where UI mounts. |
 | `src/embed` | The npm adapters: one-line install for apps you own (`initFixUi()` in dev builds), plus the React, Next and Vite entry points. Successor of hulbu's `tools/ui-feedback`. |
-| `src/bridge` | Tiny local daemon behind the `fixui` bin: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `list_surfaces`, `request_review`). |
+| `src/bridge` | Tiny local daemon behind the `fixui` bin: HTTP inbox for the adapters, per-project `.fix-ui.jsonl`, and an MCP server for agents (`list_feedback`, `resolve_feedback`, `list_surfaces`, `request_review`, `start_fix_ui_session`). |
 | fix-ui extension (Chrome) | Same core on *any* site — no code changes to the target app. Private, not published to npm. |
 
 **Why one package.** The first publish shipped an embed pinned to a separate

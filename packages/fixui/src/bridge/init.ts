@@ -57,7 +57,9 @@ function literal(names: string[]): string {
 /** The one line a consuming project's CLAUDE.md needs (docs/agent-integration.md). */
 const CLAUDE_LINE =
   '"fix ui" → read `.fix-ui.jsonl` (or the fixui MCP tools) and fix the entries;' +
-  " after UI work, call `request_review` before claiming done.";
+  " after UI work, call `request_review` before claiming done." +
+  ' "start a fix ui session" → `start_fix_ui_session`, then fix the batch it' +
+  " returns and start the next one, until they say stop.";
 
 /** What tells us the line is already there, however the developer reworded it. */
 const CLAUDE_MARKER = ".fix-ui.jsonl";
