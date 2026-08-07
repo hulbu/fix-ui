@@ -1,6 +1,17 @@
 import type { Picker, ReviewRequest, ReviewVerdict } from "./picker.js";
 
 /**
+ * How long `inbox-changed` events are gathered before the picker re-reads.
+ *
+ * An agent resolving a batch sends one event per entry, and each one means the
+ * same thing ("look again") — so the first one schedules a single read and the
+ * rest ride along. Trailing rather than leading: the burst is the common case,
+ * and a leading refresh would fetch an inbox that is still being emptied.
+ * Short enough that a human never notices the badge lagging.
+ */
+const INBOX_REFRESH_MS = 120;
+
+/**
  * The adapter half of the review channel (docs/agent-integration.md
  * "Direction 2"): the bridge pushes `review-requested` / `review-cancelled`
  * over SSE, the page answers verdicts with a plain POST. Reconnection is the
@@ -109,12 +120,36 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
     const request: ReviewRequest = { reviewId: data.reviewId, prompt: data.prompt };
     if (typeof data.url === "string") request.url = data.url;
     if (typeof data.timeoutSeconds === "number") request.timeoutSeconds = data.timeoutSeconds;
+    // Only the mode this page knows how to host. Anything else is a newer
+    // bridge talking about a banner this build cannot draw, and the review
+    // banner is the honest fallback — never a mode the user cannot answer.
+    if (data.mode === "session") request.mode = "session";
     if (request.url) navigate(request.url);
     opts.picker.startReview(request);
   }
 
   function onCancelled(): void {
     opts.picker.endReview();
+  }
+
+  /**
+   * The inbox moved — an entry created, or (the reported case) an agent
+   * resolving one. The page has no other way to learn: `hydrate()` used to run
+   * only when the panel was opened, so the chip's badge kept a number the
+   * project had already left behind.
+   *
+   * Coalesced rather than immediate: five `resolve_feedback` calls in a row are
+   * five events and must cost one re-read. A refresh already scheduled is the
+   * refresh this event wanted.
+   */
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function onInboxChanged(): void {
+    if (refreshTimer !== undefined) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      opts.picker.refresh();
+    }, INBOX_REFRESH_MS);
   }
 
   /** The bridge's handshake: the id an agent's `request_review({surfaceId})`
@@ -144,6 +179,7 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
   source.addEventListener("surface", onSurface);
   source.addEventListener("review-requested", onRequested);
   source.addEventListener("review-cancelled", onCancelled);
+  source.addEventListener("inbox-changed", onInboxChanged);
   const unsubscribe = opts.picker.onVerdict((verdict) => void postVerdict(verdict));
 
   return {
@@ -155,6 +191,11 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
       source.removeEventListener("surface", onSurface);
       source.removeEventListener("review-requested", onRequested);
       source.removeEventListener("review-cancelled", onCancelled);
+      source.removeEventListener("inbox-changed", onInboxChanged);
+      // A refresh still on the clock belongs to a channel that no longer
+      // exists — the picker may well have been destroyed with it.
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+      refreshTimer = undefined;
       source.close();
     },
   };

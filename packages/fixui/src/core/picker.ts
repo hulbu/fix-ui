@@ -152,16 +152,32 @@ export interface PickerOptions {
   onSaved?: (entry: FeedbackEntry) => void;
 }
 
+/**
+ * Which of the two agent-initiated flows the banner is hosting.
+ *
+ * `review` is the original: the agent changed something and wants a yes or a
+ * no, so the banner offers Approve / Request changes. `session` is the batched
+ * one (docs/agent-integration.md "Sessions"): the agent is standing by, the
+ * user points at as many things as they like, and ONE button — Submit — hands
+ * the whole batch over. Same channel, same held call, same timeout; only the
+ * banner and the verdict differ.
+ */
+export type ReviewMode = "review" | "session";
+
 export interface ReviewRequest {
   reviewId: string;
   prompt: string;
   url?: string;
   timeoutSeconds?: number;
+  /** Absent means `review` — an older bridge never mentions it. */
+  mode?: ReviewMode;
 }
 
 export interface ReviewVerdict {
   reviewId: string;
-  verdict: "approved" | "changes";
+  /** `submitted` is a session's only answer: it carries the batch, and an empty
+   *  batch is a legitimate "nothing wrong, carry on". */
+  verdict: "approved" | "changes" | "submitted";
   entryIds: string[];
 }
 
@@ -176,6 +192,15 @@ export interface Picker {
   /** Banner down without a verdict (the `review-cancelled` path). */
   endReview(): void;
   onVerdict(cb: (v: ReviewVerdict) => void): () => void;
+  /**
+   * Re-read the inbox and repaint: the badge, and the panel if one is open.
+   *
+   * The count used to move only when the panel was opened, so an agent
+   * resolving entries left a stale number on the chip until the user clicked
+   * it. Cheap and idempotent, so the adapter can call it on any hint that the
+   * inbox moved (`inbox-changed` on the review channel).
+   */
+  refresh(): void;
 }
 
 function isShadowRoot(node: Element | ShadowRoot): node is ShadowRoot {
@@ -254,7 +279,12 @@ export function createPicker(opts: PickerOptions): Picker {
    * tell the user their note vanished while the transport is still retrying it.
    */
   const unconfirmed = new Map<string, FeedbackEntry>();
-  let review: { reviewId: string; entryIds: string[]; armed: boolean } | null = null;
+  let review: {
+    reviewId: string;
+    entryIds: string[];
+    armed: boolean;
+    mode: ReviewMode;
+  } | null = null;
   const verdictListeners = new Set<(v: ReviewVerdict) => void>();
   const toasts = new Set<HTMLElement>();
   const toastTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -349,7 +379,7 @@ export function createPicker(opts: PickerOptions): Picker {
       color:${accent};text-transform:uppercase;letter-spacing:.04em;}
     [${NS}-banner] button{border:0;cursor:pointer;border-radius:999px;
       padding:6px 12px;font:600 12px system-ui,sans-serif;white-space:nowrap;}
-    [${NS}-approve]{background:${accent};color:#fff;}
+    [${NS}-approve],[${NS}-submit]{background:${accent};color:#fff;}
     [${NS}-changes]{background:#ffffff26;color:#fff;}
     /* "Armed" as motion, since neither the colour nor the chip's own geometry
        moves — the circle is static in every state. Only the GLYPH inside it
@@ -545,17 +575,28 @@ ${CURSOR_CSS}  `;
   }
 
   /**
-   * Hydrate saved notes from the transport (best effort). Runs at init and
-   * every time the panel opens, so entries the agent already fixed and
-   * removed disappear without a page reload.
+   * How many hydrations have been started. A refresh can arrive while an
+   * earlier one is still waiting on the network (an agent resolving entries
+   * one after another), and the older answer describes an older inbox — so
+   * only the newest read is allowed to land.
+   */
+  let hydrations = 0;
+
+  /**
+   * Hydrate saved notes from the transport (best effort). Runs at init, every
+   * time the panel opens, and on any hint that the inbox moved (`refresh`), so
+   * entries the agent already fixed and removed disappear without a page
+   * reload — and without the user clicking anything.
    */
   async function hydrate(): Promise<void> {
+    const ticket = (hydrations += 1);
     let listed: FeedbackEntry[];
     try {
       listed = await transport.list();
     } catch {
       return; // a custom transport threw — keep whatever we have locally
     }
+    if (ticket !== hydrations) return; // a newer read is already on its way
     const known = listed.filter((e) => e.id && e.note);
     // Anything the inbox now reports is confirmed and stops being ours to keep.
     for (const entry of known) unconfirmed.delete(entry.id);
@@ -805,7 +846,24 @@ ${CURSOR_CSS}  `;
     return svg;
   }
 
+  /**
+   * Repaint the panel in place, keeping the user where they were.
+   *
+   * A render can now happen without the user asking for one — an agent
+   * resolving an entry repaints the list underneath them — and rebuilding the
+   * children resets `scrollTop` to zero, which mid-scroll reads as the panel
+   * jumping out from under the pointer. The panel object itself is never
+   * replaced, so nothing else about the open panel (its dragged position, the
+   * minimized state) is at risk.
+   */
   function renderPanel(): void {
+    if (!panel) return;
+    const scrolled = panel.scrollTop;
+    paintPanel();
+    if (scrolled > 0 && panel.scrollTop !== scrolled) panel.scrollTop = scrolled;
+  }
+
+  function paintPanel(): void {
     if (!panel) return;
     panel.textContent = "";
     panel.toggleAttribute(`${NS}-minimized`, minimized);
@@ -1119,36 +1177,50 @@ ${CURSOR_CSS}  `;
   }
 
   // --- Review (agent → human, docs/agent-integration.md Direction 2) -------
-  function showBanner(prompt: string): void {
+
+  /**
+   * One banner button. Every one of them ends a held agent call, which is a
+   * decision that has to be a human's — hence `isHuman` on all three (see the
+   * note on that function): Submit is exactly as much of a decision as Approve.
+   */
+  function verdictButton(
+    attribute: string,
+    label: string,
+    verdict: ReviewVerdict["verdict"],
+  ): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.setAttribute(`${NS}-${attribute}`, "");
+    button.textContent = label;
+    button.addEventListener("click", (e) => {
+      if (!isHuman(e)) return;
+      e.stopPropagation();
+      emitVerdict(verdict);
+    });
+    return button;
+  }
+
+  function showBanner(prompt: string, mode: ReviewMode): void {
     closeBanner();
     banner = document.createElement("div");
     banner.setAttribute(`${NS}-banner`, "");
 
     const text = document.createElement("p");
     const title = document.createElement("b");
-    title.textContent = "Review requested";
+    title.textContent = mode === "session" ? "Session running" : "Review requested";
     // textContent, never innerHTML: the prompt is somebody else's text.
     text.append(title, prompt);
 
-    const approve = document.createElement("button");
-    approve.setAttribute(`${NS}-approve`, "");
-    approve.textContent = "Approve";
-    approve.addEventListener("click", (e) => {
-      if (!isHuman(e)) return;
-      e.stopPropagation();
-      emitVerdict("approved");
-    });
+    // A session is not a yes-or-no question, so it does not ask one: the user
+    // leaves as many notes as they like and hands the batch over with Submit.
+    const buttons =
+      mode === "session"
+        ? [verdictButton("submit", "Submit", "submitted")]
+        : [
+            verdictButton("approve", "Approve", "approved"),
+            verdictButton("changes", "Request changes", "changes"),
+          ];
 
-    const changes = document.createElement("button");
-    changes.setAttribute(`${NS}-changes`, "");
-    changes.textContent = "Request changes";
-    changes.addEventListener("click", (e) => {
-      if (!isHuman(e)) return;
-      e.stopPropagation();
-      emitVerdict("changes");
-    });
-
-    banner.append(text, approve, changes);
+    banner.append(text, ...buttons);
     place(banner);
   }
 
@@ -1166,8 +1238,14 @@ ${CURSOR_CSS}  `;
     // the agent cannot use.
     const resumed = review?.reviewId === req.reviewId ? review : null;
     if (!resumed) endReview(); // a different review: stand the old one down first
-    review = resumed ?? { reviewId: req.reviewId, entryIds: [], armed: !active };
-    showBanner(req.prompt); // replaces any banner already up
+    review = resumed ?? {
+      reviewId: req.reviewId,
+      entryIds: [],
+      armed: !active,
+      // A bridge that never mentions a mode is asking for the original review.
+      mode: req.mode ?? "review",
+    };
+    showBanner(req.prompt, review.mode); // replaces any banner already up
     enable(); // the plugin activates itself — the human never hunts for the chip
   }
 
@@ -1281,5 +1359,8 @@ ${CURSOR_CSS}  `;
     startReview,
     endReview,
     onVerdict,
+    refresh() {
+      void hydrate();
+    },
   };
 }

@@ -3,6 +3,7 @@ import {
   DEFAULT_BRIDGE_URL,
   FETCH_MESSAGE,
   OPTIONS_KEY,
+  INBOX_CHANGED_MESSAGE,
   REVIEW_CANCELLED_MESSAGE,
   REVIEW_REQUESTED_MESSAGE,
   TOGGLE_OFF_MESSAGE,
@@ -284,6 +285,15 @@ async function dispatch(tabId: string, event: { event: string; data: string }): 
   if (event.event === "review-cancelled") {
     pendingReviews.delete(tabId);
     await tell(tabId, { type: REVIEW_CANCELLED_MESSAGE });
+    return;
+  }
+  // The inbox moved under the page — an entry created, or the reported case:
+  // an agent resolving one, which used to leave a stale count on the chip.
+  // Nothing is queued for a tab with no content script: a tab that is injected
+  // later hydrates on start anyway.
+  if (event.event === "inbox-changed") {
+    await tell(tabId, { type: INBOX_CHANGED_MESSAGE });
+    return;
   }
   // `surface` (the id the bridge assigned this tab) needs no action here: the
   // agent reads it from the bridge's own `list_surfaces`, and the worker has

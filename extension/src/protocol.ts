@@ -40,6 +40,9 @@ export const CONFIG_MESSAGE = "fixui:config";
 export const TOGGLE_OFF_MESSAGE = "fixui:toggle-off";
 export const REVIEW_REQUESTED_MESSAGE = "fixui:review-requested";
 export const REVIEW_CANCELLED_MESSAGE = "fixui:review-cancelled";
+/** The project's inbox moved (an entry created, or an agent resolving one), so
+ *  the picker's badge is out of date. Carries nothing: it is a "look again". */
+export const INBOX_CHANGED_MESSAGE = "fixui:inbox-changed";
 
 // --- options: origin → project ---------------------------------------------
 
@@ -536,6 +539,9 @@ export interface ReviewRequestMessage {
   prompt: string;
   url?: string;
   timeoutSeconds?: number;
+  /** A batched fix-ui session rather than an approve/request-changes review
+   *  (docs/agent-integration.md "Sessions"). Absent means a review. */
+  mode?: "session";
 }
 
 /** The `review-requested` event body, validated before it reaches a picker. */
@@ -557,5 +563,9 @@ export function parseReviewRequested(data: string): ReviewRequestMessage | null 
   if (typeof body.timeoutSeconds === "number" && Number.isFinite(body.timeoutSeconds)) {
     request.timeoutSeconds = body.timeoutSeconds;
   }
+  // Only the mode this build knows how to draw. Anything else — a newer
+  // bridge, a hostile page — falls back to the review banner, which every
+  // build can answer.
+  if (body.mode === "session") request.mode = "session";
   return request;
 }

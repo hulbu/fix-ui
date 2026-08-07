@@ -12,6 +12,7 @@ import {
   CONFIG_MESSAGE,
   CONTENT_SOURCE,
   PROBE_ATTRIBUTE,
+  INBOX_CHANGED_MESSAGE,
   REVIEW_CANCELLED_MESSAGE,
   REVIEW_REQUESTED_MESSAGE,
   TOGGLE_OFF_MESSAGE,
@@ -85,6 +86,10 @@ async function openQueueStorage(): Promise<Pick<Storage, "getItem" | "setItem" |
     },
   };
 }
+
+/** How long `inbox-changed` messages are gathered before the picker re-reads
+ *  — the same window the embed uses (src/core/review-channel.ts). */
+const INBOX_REFRESH_MS = 120;
 
 interface ContentConfig {
   bridgeUrl: string;
@@ -228,7 +233,25 @@ function install(): void {
     if (type === REVIEW_CANCELLED_MESSAGE) {
       queuedReview = null;
       picker?.endReview();
+      return;
     }
+    if (type === INBOX_CHANGED_MESSAGE) refreshSoon();
+  }
+
+  /**
+   * Re-read the inbox, once, for a burst of changes. An agent resolving five
+   * entries in a row is five events that all mean the same thing, and the
+   * refresh already on the clock is the one this event wanted. Mirrors the
+   * embed's own coalescing (src/core/review-channel.ts).
+   */
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function refreshSoon(): void {
+    if (refreshTimer !== undefined) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      picker?.refresh();
+    }, INBOX_REFRESH_MS);
   }
 
   async function readConfig(): Promise<ContentConfig | null> {
@@ -287,6 +310,8 @@ function install(): void {
   function teardown(): void {
     if (torn) return;
     torn = true;
+    if (refreshTimer !== undefined) clearTimeout(refreshTimer);
+    refreshTimer = undefined;
     unsubscribe?.();
     picker?.destroy();
     transport?.destroy();

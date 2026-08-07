@@ -49,6 +49,7 @@ function fakePicker(): FakePicker {
     active: false,
     startReview: vi.fn(),
     endReview: vi.fn(),
+    refresh: vi.fn(),
     onVerdict: vi.fn((cb: (v: ReviewVerdict) => void) => {
       listener = cb;
       return unsubscribe;
@@ -212,6 +213,89 @@ describe("connectReviewChannel", () => {
 
     FakeEventSource.instances[0]!.emit("review-requested", { reviewId: "r1", prompt: "look" });
     expect(picker.startReview).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The reported bug: the count only moved when the panel was opened, so an
+   * agent clearing entries left a stale number on the chip. The bridge says
+   * `inbox-changed`; the page answers by re-reading, whether or not anything is
+   * open — and a burst of them (five `resolve_feedback` calls in a row) is one
+   * re-read, not five.
+   */
+  it("inbox-changed refreshes the picker, and a burst of them refreshes once", async () => {
+    vi.useFakeTimers();
+    try {
+      const picker = fakePicker();
+      connectReviewChannel({ bridgeUrl: BRIDGE, picker, fetchImpl: okFetch(), eventSourceImpl });
+      const source = FakeEventSource.instances[0]!;
+
+      for (let n = 0; n < 5; n += 1) source.emit("inbox-changed", { project: "/repo/app" });
+      expect(picker.refresh).not.toHaveBeenCalled(); // coalesced, never eager
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(picker.refresh).toHaveBeenCalledTimes(1);
+
+      // A change after the window is its own refresh — coalescing is not a rate
+      // limit that swallows the next one.
+      source.emit("inbox-changed", {});
+      await vi.advanceTimersByTimeAsync(500);
+      expect(picker.refresh).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a pending refresh is dropped when the channel closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const picker = fakePicker();
+      const channel = connectReviewChannel({
+        bridgeUrl: BRIDGE,
+        picker,
+        fetchImpl: okFetch(),
+        eventSourceImpl,
+      });
+      const source = FakeEventSource.instances[0]!;
+
+      source.emit("inbox-changed", {});
+      channel.close();
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(picker.refresh).not.toHaveBeenCalled();
+      source.emit("inbox-changed", {});
+      await vi.advanceTimersByTimeAsync(500);
+      expect(picker.refresh).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A session is the same channel wearing a different banner: the mode travels
+   *  on `review-requested`, and the verdict travels back the same way. */
+  it("carries a session's mode to the picker and its submitted verdict back", async () => {
+    const picker = fakePicker();
+    const fetchImpl = okFetch();
+    connectReviewChannel({ bridgeUrl: BRIDGE, picker, fetchImpl, eventSourceImpl });
+    const source = FakeEventSource.instances[0]!;
+
+    source.emit("review-requested", { reviewId: "ses-1", prompt: "Fix what you see", mode: "session" });
+    expect(picker.startReview).toHaveBeenCalledWith({
+      reviewId: "ses-1",
+      prompt: "Fix what you see",
+      mode: "session",
+    });
+
+    // An unknown mode is not a mode: an older page would ignore it, and a newer
+    // bridge must not be able to talk this one into a banner it cannot answer.
+    source.emit("review-requested", { reviewId: "rev-2", prompt: "plain", mode: "whatever" });
+    expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "rev-2", prompt: "plain" });
+
+    picker.verdict({ reviewId: "ses-1", verdict: "submitted", entryIds: ["e1"] });
+    await settle();
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({
+      verdict: "submitted",
+      entryIds: ["e1"],
+    });
   });
 
   it("navigates by hash when only the fragment differs and ignores cross-origin urls", () => {

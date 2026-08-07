@@ -158,6 +158,7 @@ export function initFixUi(
     startReview: picker.startReview,
     endReview: picker.endReview,
     onVerdict: picker.onVerdict,
+    refresh: picker.refresh,
     // A getter, not a copy: `active` has to track the live picker.
     get active() {
       return picker.active;

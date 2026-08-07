@@ -32,6 +32,20 @@ function fakeTransport(
 /** MutationObserver callbacks land on the microtask queue. */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** An entry as the bridge's inbox reports it back — what `list()` answers. */
+function inboxEntry(id: string, note: string): FeedbackEntry {
+  return {
+    v: 1,
+    id,
+    note,
+    selector: `#${id}`,
+    url: "http://localhost:4001/",
+    viewport: { width: 1280, height: 800 },
+    userAgent: "test-agent",
+    createdAt: "2026-07-31T09:00:00.000Z",
+  };
+}
+
 const live: Picker[] = [];
 function make(opts: PickerOptions): Picker {
   const picker = createPicker(opts);
@@ -477,6 +491,182 @@ describe("createPicker", () => {
     expect(query(`[${NS}-banner]`)).toBeNull();
     expect(picker.active).toBe(false);
     expect(onVerdict).not.toHaveBeenCalled();
+  });
+
+  // ── refresh(): the inbox moved and nobody clicked anything ────────────────
+  // The count used to be re-read only when the panel opened, so an agent
+  // resolving entries left the chip showing yesterday's number.
+
+  it("refresh() re-reads the inbox and repaints the badge with the panel closed", async () => {
+    const transport = fakeTransport();
+    transport.listed.push(inboxEntry("a", "one"), inboxEntry("b", "two"));
+    const picker = make({ transport });
+    await settle();
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("2");
+
+    // The agent resolved one of them.
+    transport.listed.splice(0, 1);
+    picker.refresh();
+    await settle();
+
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    // Nothing was opened behind the user's back — the badge is the whole of it.
+    expect(query(`[${NS}-panel]`)).toBeNull();
+
+    // An emptied inbox takes the badge away entirely.
+    transport.listed.length = 0;
+    picker.refresh();
+    await settle();
+    expect(query(`[${NS}-badge]`)).toBeNull();
+  });
+
+  it("refresh() repaints an open panel without throwing away where the user scrolled to", async () => {
+    const transport = fakeTransport();
+    for (let n = 0; n < 12; n += 1) transport.listed.push(inboxEntry(`e${n}`, `note ${n}`));
+    const picker = make({ transport });
+    await settle();
+
+    const panel = await openPanel();
+    expect(panel.querySelectorAll(`[${NS}-row]`).length).toBe(12);
+    // jsdom lays nothing out, so scrollTop is a plain writable number here —
+    // which is exactly the state a re-render must not stamp back to zero.
+    panel.scrollTop = 140;
+
+    transport.listed.splice(0, 1); // the agent fixed the first one
+    picker.refresh();
+    await settle();
+
+    const same = query(`[${NS}-panel]`)!;
+    expect(same).toBe(panel); // repainted in place, not closed and reopened
+    expect(same.querySelectorAll(`[${NS}-row]`).length).toBe(11);
+    expect(same.textContent).not.toContain("note 0");
+    expect(same.scrollTop).toBe(140);
+  });
+
+  /** A note the transport is still retrying is not in any inbox listing, and a
+   *  refresh must not be what tells the user it vanished. */
+  it("refresh() keeps notes the transport has not delivered yet", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport({ ok: false, queued: true });
+    const picker = make({ transport });
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("queued note");
+    picker.disable();
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+
+    picker.refresh();
+    await settle();
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+  });
+
+  // ── Session mode (human-in-the-loop, batched) ─────────────────────────────
+
+  it("a session banner arms the picker and offers Submit — not Approve/Request changes", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport });
+    const verdicts: ReviewVerdict[] = [];
+    picker.onVerdict((v) => verdicts.push(v));
+
+    picker.startReview({ reviewId: "ses-1", prompt: "Fix-UI session", mode: "session" });
+
+    const banner = query(`[${NS}-banner]`)!;
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain("Fix-UI session");
+    expect(picker.active).toBe(true);
+    // One button, and it is the one the user is looking for.
+    expect(banner.querySelectorAll("button").length).toBe(1);
+    expect(banner.querySelector(`[${NS}-submit]`)!.textContent).toBe("Submit");
+    expect(banner.querySelector(`[${NS}-approve]`)).toBeNull();
+    expect(banner.querySelector(`[${NS}-changes]`)).toBeNull();
+
+    clickSequence(query("#cta")!);
+    await typeAndSave("the CTA is the wrong orange");
+    clickSequence(query("#cta")!);
+    await typeAndSave("and it is too small");
+
+    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+
+    expect(verdicts).toEqual([
+      {
+        reviewId: "ses-1",
+        verdict: "submitted",
+        entryIds: transport.created.map((entry) => entry.id),
+      },
+    ]);
+    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(picker.active).toBe(false);
+  });
+
+  /** "Nothing wrong, carry on" is a legitimate answer, and it must not hang. */
+  it("an empty submit ends the session with zero entries", () => {
+    const picker = make({ transport: fakeTransport() });
+    const verdicts: ReviewVerdict[] = [];
+    picker.onVerdict((v) => verdicts.push(v));
+
+    picker.startReview({ reviewId: "ses-2", prompt: "Anything to fix?", mode: "session" });
+    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+
+    expect(verdicts).toEqual([{ reviewId: "ses-2", verdict: "submitted", entryIds: [] }]);
+    expect(query(`[${NS}-banner]`)).toBeNull();
+  });
+
+  /** Submit is a decision a human has to make, so it carries the same guard the
+   *  review verdicts do (see "ignores verdict clicks the page synthesized"). */
+  it("ignores a Submit the page synthesized", () => {
+    const picker = make({ transport: fakeTransport() });
+    const verdicts: ReviewVerdict[] = [];
+    picker.onVerdict((v) => verdicts.push(v));
+
+    picker.startReview({ reviewId: "ses-3", prompt: "Session", mode: "session" });
+    const banner = query(`[${NS}-banner]`)!;
+    const submit = banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
+
+    submit.click();
+    submit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    expect(verdicts).toEqual([]);
+    expect(query(`[${NS}-banner]`)).not.toBeNull();
+
+    humanClick(submit);
+    expect(verdicts).toEqual([{ reviewId: "ses-3", verdict: "submitted", entryIds: [] }]);
+  });
+
+  /** A session outlives a dropped stream the same way a review does: the bridge
+   *  replays it, and the notes taken so far are still the session's. */
+  it("a replayed session resumes it, notes and all", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport });
+    const verdicts: ReviewVerdict[] = [];
+    picker.onVerdict((v) => verdicts.push(v));
+
+    picker.startReview({ reviewId: "ses-4", prompt: "Session", mode: "session" });
+    clickSequence(query("#cta")!);
+    await typeAndSave("tighten the spacing");
+
+    picker.startReview({ reviewId: "ses-4", prompt: "Session", mode: "session" });
+    const banner = query(`[${NS}-banner]`)!;
+    expect(banner.querySelectorAll("button").length).toBe(1);
+
+    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    expect(verdicts).toEqual([
+      { reviewId: "ses-4", verdict: "submitted", entryIds: [transport.created[0]!.id] },
+    ]);
+  });
+
+  it("a plain review after a session is a plain review again", () => {
+    const picker = make({ transport: fakeTransport() });
+
+    picker.startReview({ reviewId: "ses-5", prompt: "Session", mode: "session" });
+    picker.startReview({ reviewId: "rev-9", prompt: "Review" });
+
+    const banner = query(`[${NS}-banner]`)!;
+    expect(banner.querySelector(`[${NS}-submit]`)).toBeNull();
+    expect(banner.querySelector(`[${NS}-approve]`)).not.toBeNull();
+    expect(banner.querySelector(`[${NS}-changes]`)).not.toBeNull();
   });
 
   it("a rejected create is reported as an error, not as a save", async () => {

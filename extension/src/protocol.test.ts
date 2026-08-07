@@ -581,6 +581,24 @@ describe("parseReviewRequested", () => {
     });
   });
 
+  /** A session is the same event with a different banner behind it; anything
+   *  that is not the one mode this build can draw falls back to a review. */
+  it("keeps a session mode and ignores any other", () => {
+    expect(parseReviewRequested(JSON.stringify({ reviewId: "s1", prompt: "p", mode: "session" }))).toEqual({
+      reviewId: "s1",
+      prompt: "p",
+      mode: "session",
+    });
+    expect(parseReviewRequested(JSON.stringify({ reviewId: "r1", prompt: "p", mode: "review" }))).toEqual({
+      reviewId: "r1",
+      prompt: "p",
+    });
+    expect(parseReviewRequested(JSON.stringify({ reviewId: "r1", prompt: "p", mode: 7 }))).toEqual({
+      reviewId: "r1",
+      prompt: "p",
+    });
+  });
+
   it("rejects malformed payloads", () => {
     expect(parseReviewRequested("not json")).toBeNull();
     expect(parseReviewRequested("[]")).toBeNull();
