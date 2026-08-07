@@ -93,9 +93,27 @@ export interface InitResult {
   changed: string[];
   /** One line per thing deliberately not done, each naming the manual fix. */
   skipped: string[];
+  /**
+   * Everything init could not finish, written as instructions to an agent and
+   * ready to paste. `undefined` — and only then — means the project is wired.
+   */
+  agentPrompt?: string;
   /** The single thing to do next. */
   nextStep: string;
 }
+
+/**
+ * Work that is left, phrased for the agent that will do it.
+ *
+ * Kept beside `skipped` rather than derived from it, because the two audiences
+ * are different: `skipped` tells a person what init declined to touch, and this
+ * tells an agent what to do about it, in the imperative, naming the file. It is
+ * also *wider* than `skipped` — a Next pages-router app is edited successfully
+ * and still is not finished (the client adapter cannot discover the bridge),
+ * and saying nothing there would be declaring victory on a chip that quietly
+ * queues notes.
+ */
+type Todo = string[];
 
 // ── filesystem helpers ──────────────────────────────────────────────────────
 
@@ -366,11 +384,12 @@ interface AddOptions {
   prefix: string;
   changed: string[];
   skipped: string[];
+  todo: Todo;
 }
 
 /** Installs what is missing, and returns the manifest as it is on disk after. */
 async function addDependencies(options: AddOptions): Promise<Manifest> {
-  const { dir, wanted, manager, install, where, prefix, changed, skipped } = options;
+  const { dir, wanted, manager, install, where, prefix, changed, skipped, todo } = options;
   let manifest = options.manifest;
   const present = { ...manifest.dependencies, ...manifest.devDependencies };
   const packages = Object.fromEntries(
@@ -396,6 +415,10 @@ async function addDependencies(options: AddOptions): Promise<Manifest> {
     skipped.push(
       `the install ${exitedOk ? "did not add the package" : "failed"}${where} — run it yourself:` +
         `\n    ${prefix}${command.join(" ")}`,
+    );
+    todo.push(
+      `Install the package — init's own attempt${where} did not land it. Run:` +
+        ` ${prefix}${command.join(" ")}`,
     );
   }
   return manifest;
@@ -518,6 +541,57 @@ function withTranspilePackages(source: string): string | undefined {
   return `${source.slice(0, at)}\n  transpilePackages: ${literal(TRANSPILE)},${tail}${source.slice(at)}`;
 }
 
+// ── source edits: Next, pages router ────────────────────────────────────────
+
+/**
+ * The pages router gets `<FixUi />` from `fixui/react`, not `<FixUiScript />`:
+ * the Next adapter is an async server component and the pages router cannot
+ * render one. The cost is that this variant is a *client* component and so
+ * cannot read `.fix-ui.json` — it falls back to the default bridge URL, which
+ * is why wiring it is not the same as finishing (see the todo we raise).
+ */
+const PAGES_IMPORT = 'import { FixUi } from "fixui/react";';
+
+const PAGES_APPS = ["pages", "src/pages"].flatMap((dir) =>
+  ["tsx", "jsx", "ts", "js"].map((extension) => `${dir}/_app.${extension}`),
+);
+
+/** `return <Component {...pageProps} />;` — the shape a custom App is written
+ *  in. One element, self-closing, nothing nested: anything else is not this. */
+const SINGLE_RETURN = /(\breturn\s*\(?\s*)(<[A-Z][\w.]*(?:\s[^<>]*?)?\/>)(\s*\)?\s*;?)/g;
+
+/**
+ * `<FixUi />` beside whatever the App already renders — inside the fragment it
+ * has, or inside one we wrap its single element in. Exactly one of each shape,
+ * for the same reason as `</body>`: two means we would be picking one.
+ */
+function withFixUiComponent(source: string): string | undefined {
+  const fragments = [...source.matchAll(/<\/>/g)];
+  if (fragments.length === 1) {
+    const close = fragments[0]!.index;
+    const lineStart = source.lastIndexOf("\n", close) + 1;
+    const before = source.slice(lineStart, close);
+    const inserted =
+      before.trim() === ""
+        ? `${source.slice(0, lineStart)}${before}  <FixUi />\n${source.slice(lineStart)}`
+        : `${source.slice(0, close)}<FixUi />${source.slice(close)}`;
+    return withImport(inserted, PAGES_IMPORT);
+  }
+  if (fragments.length > 1) return undefined;
+
+  const returns = [...source.matchAll(SINGLE_RETURN)];
+  if (returns.length !== 1) return undefined;
+  const match = returns[0]!;
+  const indent = indentOf(source, match.index);
+  const wrapped =
+    `return (\n${indent}  <>\n${indent}    ${match[2]!}\n${indent}    <FixUi />\n` +
+    `${indent}  </>\n${indent});`;
+  return withImport(
+    source.slice(0, match.index) + wrapped + source.slice(match.index + match[0].length),
+    PAGES_IMPORT,
+  );
+}
+
 // ── source edits: Vite ──────────────────────────────────────────────────────
 
 const VITE_IMPORT = 'import { fixui } from "fixui/vite";';
@@ -557,13 +631,79 @@ function withVitePlugin(source: string): string | undefined {
 const ADAPTER_TABLE = [
   "  Next (app router)   import { FixUiScript } from \"fixui/next\"",
   "                      → render <FixUiScript /> last inside <body> in app/layout.tsx",
-  "  Next (pages router) the same component",
-  "                      → render <FixUiScript /> in pages/_app.tsx",
+  "  Next (pages router) import { FixUi } from \"fixui/react\"",
+  "                      → render <FixUi /> beside <Component …> in pages/_app.tsx",
   "  Vite                import { fixui } from \"fixui/vite\"",
   "                      → add fixui() to plugins in vite.config.*",
   "  plain HTML          <script src=\"…/fixui/dist/fixui.global.js\" data-port … data-token …>",
   "  anything else       call initFixUi() from \"fixui\" in a dev-only entry point",
 ].join("\n");
+
+/** The adapter reference init copies in, named wherever the agent is sent to it. */
+const ADAPTERS_DOC = ".claude/skills/fix-ui/adapters.md";
+
+// ── the prompt to paste, for the work init could not finish ─────────────────
+
+/**
+ * The paste-ready block.
+ *
+ * When init stops short, the developer's next move is to tell an agent to
+ * finish — and the difference between a good and a wasted twenty minutes is
+ * whether that agent is handed the specifics init already knows (which package
+ * renders the app, which file it could not parse) or has to rediscover them. So
+ * this is the actual words, not a link to them, and it names what is actually
+ * left rather than describing the whole job.
+ */
+const PROMPT_TITLE = "Paste this to your agent";
+
+const PROMPT_LEAD =
+  "Wire fix-ui into this project. `fixui init` has already done what it could;" +
+  " this is what is left.";
+
+const PROMPT_CLOSE =
+  "Then start the dev server and tell me whether the fix-ui chip appears" +
+  " bottom-right on the page.";
+
+/** The prompt as plain text — paragraphs, in the order they must be done. */
+function composePrompt(todo: Todo): string | undefined {
+  if (todo.length === 0) return undefined;
+  return [PROMPT_LEAD, ...todo, PROMPT_CLOSE].join("\n\n");
+}
+
+/** Wrapped at `width`, never mid-word: a path split across two lines is a path
+ *  that pastes back broken. */
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/).filter((one) => one !== "")) {
+    if (line === "") line = word;
+    else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line !== "") lines.push(line);
+  return lines;
+}
+
+/** The prompt, drawn — so it is obvious where the thing to copy begins and ends. */
+function drawPrompt(prompt: string): string {
+  const paragraphs = prompt.split("\n\n").map((one) => wrap(one, 58));
+  const body: string[] = [];
+  for (const [index, paragraph] of paragraphs.entries()) {
+    if (index > 0) body.push("");
+    body.push(...paragraph);
+  }
+  // A word longer than the wrap width (a long path) widens the box rather than
+  // being broken in half.
+  const width = Math.max(58, ...body.map((line) => line.length), PROMPT_TITLE.length + 2);
+  return [
+    `┌─ ${PROMPT_TITLE} ${"─".repeat(width + 2 - PROMPT_TITLE.length - 3)}┐`,
+    ...body.map((line) => `│ ${line.padEnd(width)} │`),
+    `└${"─".repeat(width + 2)}┘`,
+  ].join("\n");
+}
 
 /** What the thing does, once it is wired — the part a link would not tell you. */
 const HOW_TO_USE = [
@@ -609,14 +749,177 @@ async function findConfig(project: string, names: string[]): Promise<string | un
   return undefined;
 }
 
-async function findLayout(project: string): Promise<string | undefined> {
-  for (const dir of ["app", "src/app"]) {
+async function findLayout(dir: string): Promise<string | undefined> {
+  for (const where of ["app", "src/app"]) {
     for (const extension of ["tsx", "jsx", "ts", "js"]) {
-      const relative = path.join(dir, `layout.${extension}`);
-      if (await fileExists(path.join(project, relative))) return relative;
+      const relative = path.join(where, `layout.${extension}`);
+      if (await fileExists(path.join(dir, relative))) return relative;
     }
   }
   return undefined;
+}
+
+// ── the injection edit, wherever the app actually lives ─────────────────────
+
+/**
+ * The one edit that has to happen *in the package that renders the app*.
+ *
+ * In a single-package project that is the project. In a workspace it is the
+ * member that depends on `next` or `vite` — the same package the dependency
+ * goes in, and for the same reason: an adapter imported from a package that
+ * cannot resolve it is not wired, it is broken. (The *lifetime* edit is the
+ * opposite: it stays at the root, because one bridge covers the whole repo.)
+ */
+interface Edits {
+  /** The project root: every path is reported relative to it. */
+  project: string;
+  /** The package that renders the app. */
+  dir: string;
+  changed: string[];
+  skipped: string[];
+  todo: Todo;
+}
+
+/** How a file under the app package is named in a sentence — "app/layout.tsx"
+ *  at the root, "website/app/layout.tsx" a package below it. */
+function shown(edits: Edits, relative: string): string {
+  const full = path.relative(edits.project, path.join(edits.dir, relative));
+  return full.split(path.sep).join("/");
+}
+
+async function injectNextLayout(edits: Edits): Promise<void> {
+  const relative = await findLayout(edits.dir);
+  if (relative === undefined) return; // detectStack found one; nothing to do if it is gone
+  const name = shown(edits, relative);
+  const file = path.join(edits.dir, relative);
+  const source = await readFile(file, "utf8");
+  if (source.includes("FixUiScript")) return;
+
+  const edited = withFixUiScript(source);
+  if (edited === undefined) {
+    edits.skipped.push(
+      `${name} does not have exactly one </body> — add \`${NEXT_IMPORT}\`` +
+        " and render `<FixUiScript />` last inside <body> yourself",
+    );
+    edits.todo.push(
+      `In ${name}, add \`${NEXT_IMPORT}\` and render \`<FixUiScript />\` as the last` +
+        " thing inside <body>. init left that file alone because it does not have exactly" +
+        ` one </body> and it will not guess. ${ADAPTERS_DOC} has the shape.`,
+    );
+    return;
+  }
+  await writeFile(file, edited);
+  edits.changed.push(`${name}: <FixUiScript /> inside <body>`);
+}
+
+async function injectPagesApp(edits: Edits): Promise<void> {
+  const relative = await findConfig(edits.dir, PAGES_APPS);
+  if (relative === undefined) {
+    edits.skipped.push(
+      `no ${shown(edits, "pages/_app.tsx")} to edit — create one, add` +
+        ` \`${PAGES_IMPORT}\` and render \`<FixUi />\` beside <Component {...pageProps} />`,
+    );
+    edits.todo.push(
+      `This is a Next pages-router app and it has no ${shown(edits, "pages/_app.tsx")}.` +
+        ` Create one, add \`${PAGES_IMPORT}\` and render \`<FixUi />\` beside` +
+        ` <Component {...pageProps} /> — ${ADAPTERS_DOC} has the shape.`,
+    );
+    return;
+  }
+
+  const name = shown(edits, relative);
+  const file = path.join(edits.dir, relative);
+  const source = await readFile(file, "utf8");
+  const already = source.includes("fixui/react") || source.includes("<FixUi ");
+  if (!already) {
+    const edited = withFixUiComponent(source);
+    if (edited === undefined) {
+      edits.skipped.push(
+        `${name} is not a shape we can edit safely — add \`${PAGES_IMPORT}\`` +
+          " and render `<FixUi />` beside <Component {...pageProps} /> yourself",
+      );
+      edits.todo.push(
+        `In ${name}, add \`${PAGES_IMPORT}\` and render \`<FixUi />\` beside` +
+          " <Component {...pageProps} />, inside a fragment. init left the file alone" +
+          ` because it could not read its return shape. ${ADAPTERS_DOC} has the example.`,
+      );
+      return;
+    }
+    await writeFile(file, edited);
+    edits.changed.push(`${name}: <FixUi /> beside the page`);
+  }
+
+  // Wired, and still not finished — said on every run, because it is a property
+  // of the pages-router adapter rather than of this one.
+  edits.todo.push(
+    `${name} renders <FixUi /> from fixui/react. That adapter is a client component,` +
+      " so unlike the app-router one it cannot read .fix-ui.json and falls back to" +
+      " http://127.0.0.1:3499. Start the dev server, leave a note, and check it reaches" +
+      " the inbox; if it does not, either pin the bridge to that port (`fixui dev --port" +
+      " 3499 -- …` in the root dev script) or pass bridgeUrl and token to <FixUi />" +
+      ` explicitly — ${ADAPTERS_DOC} explains both.`,
+  );
+}
+
+/** Both Next routers need it: the embed is compiled along with the app. */
+async function injectNextConfig(edits: Edits): Promise<void> {
+  const configName = await findConfig(edits.dir, NEXT_CONFIGS);
+  if (configName === undefined) {
+    await writeFile(path.join(edits.dir, "next.config.mjs"), NEW_NEXT_CONFIG);
+    edits.changed.push(`${shown(edits, "next.config.mjs")}: transpilePackages ${literal(TRANSPILE)}`);
+    return;
+  }
+
+  const name = shown(edits, configName);
+  const file = path.join(edits.dir, configName);
+  const source = await readFile(file, "utf8");
+  const edited = withTranspilePackages(source);
+  if (edited === undefined) {
+    edits.skipped.push(
+      `${name}: could not add transpilePackages — add ${literal(TRANSPILE)}` +
+        " to it by hand if the embed fails to compile",
+    );
+    edits.todo.push(
+      `In ${name}, add ${literal(TRANSPILE)} to transpilePackages. init could not read` +
+        " the shape it is written in, and without it the import fails inside node_modules.",
+    );
+  } else if (edited !== source) {
+    await writeFile(file, edited);
+    edits.changed.push(`${name}: transpilePackages ${literal(TRANSPILE)}`);
+  }
+}
+
+async function injectVitePlugin(edits: Edits): Promise<void> {
+  const configName = await findConfig(edits.dir, VITE_CONFIGS);
+  if (configName === undefined) {
+    edits.skipped.push(`no vite.config.* found — add \`${VITE_IMPORT}\` and fixui() to plugins`);
+    edits.todo.push(
+      `This is a Vite app with no vite.config.* that init could find${
+        edits.dir === edits.project ? "" : ` in ${shown(edits, ".")}`
+      }. Add one with \`${VITE_IMPORT}\` and fixui() in plugins — ${ADAPTERS_DOC} has the shape.`,
+    );
+    return;
+  }
+
+  const name = shown(edits, configName);
+  const file = path.join(edits.dir, configName);
+  const source = await readFile(file, "utf8");
+  if (source.includes("fixui/vite")) return;
+
+  const edited = withVitePlugin(source);
+  if (edited === undefined) {
+    edits.skipped.push(
+      `${name} has no plugins array we could read — add \`${VITE_IMPORT}\`` +
+        " and fixui() to plugins yourself",
+    );
+    edits.todo.push(
+      `In ${name}, add \`${VITE_IMPORT}\` and put fixui() in the plugins array. init left` +
+        " the file alone because it could not tell which plugins array was Vite's own.",
+    );
+    return;
+  }
+  await writeFile(file, edited);
+  edits.changed.push(`${name}: fixui() in plugins`);
 }
 
 export async function runInit(options: InitOptions): Promise<InitResult> {
@@ -624,12 +927,18 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
   const install = options.install ?? shellInstall;
   const changed: string[] = [];
   const skipped: string[] = [];
+  const todo: Todo = [];
 
   const manifestFile = path.join(project, "package.json");
   const manifestRaw = await readText(manifestFile);
   let manifest: Manifest | undefined;
   if (manifestRaw === undefined) {
     skipped.push("no package.json here — the dependency and the dev script are yours to add");
+    todo.push(
+      `There is no package.json here, so init could not install ${PACKAGE} or wrap the dev` +
+        ` script. Install it, start the dev server as \`fixui dev -- <your dev command>\`,` +
+        ` then read ${ADAPTERS_DOC}, pick the adapter for this stack and make the injection edit.`,
+    );
   } else {
     try {
       manifest = JSON.parse(manifestRaw) as Manifest;
@@ -638,10 +947,61 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         "package.json is not valid JSON — left untouched;" +
           ` install ${PACKAGE} and wrap the dev script as \`fixui dev -- <your dev command>\` yourself`,
       );
+      todo.push(
+        "package.json here is not valid JSON, so init touched none of it. Fix it, install" +
+          ` ${PACKAGE}, wrap the dev script as \`fixui dev -- <your dev command>\`, then read` +
+          ` ${ADAPTERS_DOC} and make the injection edit.`,
+      );
     }
   }
 
   const manager = await detectManager(project);
+
+  // ── 0. which package renders the app ──────────────────────────────────────
+  // Everything package-shaped below hangs off this: the dependency and the
+  // injection edit both belong to the package that imports the adapter, and in
+  // a workspace that is not the root. Guessing it wrong is the twenty minutes
+  // this command exists to save, so where it cannot be known the answer is
+  // "none" and init says which packages it looked at.
+  const globs = manifest === undefined ? undefined : await workspaceGlobs(project, manifest);
+  const apps = globs === undefined ? [] : await findAppPackages(project, globs);
+  const app = apps.length === 1 ? apps[0] : undefined;
+  const rootRenders =
+    manifest !== undefined &&
+    ["next", "vite"].some(
+      (name) =>
+        manifest?.dependencies?.[name] !== undefined ||
+        manifest?.devDependencies?.[name] !== undefined,
+    );
+  /** Where the injection edit goes, or `undefined` for "we will not guess". */
+  const appDir =
+    globs === undefined
+      ? project
+      : (app?.dir ?? (apps.length === 0 && rootRenders ? project : undefined));
+
+  if (globs !== undefined && appDir === undefined) {
+    const candidates = apps.map((one) => one.name);
+    skipped.push(
+      (apps.length === 0
+        ? "this is a workspace and no package depends on next or vite, so"
+        : `this is a workspace and ${list(candidates)} could each be the app, so`) +
+        ` ${PACKAGE} went in at the root only and no adapter was inserted — add it to the` +
+        " package that renders your app and make the adapter edit there",
+    );
+    todo.push(
+      (apps.length === 0
+        ? "This is a workspace and no package in it depends on next or vite, so init could" +
+          " not tell which one renders the UI."
+        : `This is a workspace and ${list(candidates)} could each be the app` +
+          ` (${list(apps.map((one) => path.relative(project, one.dir)))}), so init edited` +
+          " neither rather than guess.") +
+        ` Pick the package that renders the UI, install ${PACKAGE} in it` +
+        ` (\`${installArgv(manager, [PACKAGE]).join(" ")}\` from that directory — a root-level` +
+        ` install is not on its resolution path), then read ${ADAPTERS_DOC}, pick the adapter` +
+        " for that stack and make the injection edit in that package. The root dev script is" +
+        " already wrapped, and one bridge covers the whole repo, so leave it alone.",
+    );
+  }
 
   // ── 1. the devDependency ──────────────────────────────────────────────────
   // First, because the package manager rewrites package.json and would drop the
@@ -660,27 +1020,16 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         " it resolves outside this project's tree, which breaks the production build" +
         " and cannot be installed on CI",
     );
+    todo.push(
+      `The fix-ui checkout at ${local} has not been packed, so nothing was installed. Run` +
+        ` \`make package\` there, then rerun \`npx fixui init --local ${local}\` here.`,
+    );
   }
 
   if (manifest !== undefined && (local === undefined || tarballs !== undefined)) {
     const wanted: Record<string, string> = {
       [PACKAGE]: tarballs === undefined ? PACKAGE : tarballs[PACKAGE]!,
     };
-
-    const globs = await workspaceGlobs(project, manifest);
-    const apps = globs === undefined ? [] : await findAppPackages(project, globs);
-    const app = globs !== undefined && apps.length === 1 ? apps[0]! : undefined;
-
-    if (globs !== undefined && app === undefined) {
-      // Guessing which package imports the embed is worse than saying we did not.
-      skipped.push(
-        (apps.length === 0
-          ? "this is a workspace and no package depends on next or vite, so"
-          : `this is a workspace and ${list(apps.map((one) => one.name))} could each be the app, so`) +
-          ` ${PACKAGE} went in at the root only — add it to the package that renders your app` +
-          " as well, or its import will not resolve there",
-      );
-    }
 
     // The root always: that is where the wrapped `dev` script runs, and the
     // `fixui` bin has to be findable from there.
@@ -694,6 +1043,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
       prefix: "",
       changed,
       skipped,
+      todo,
     });
 
     // And the app package as well, when there is exactly one and we are sure
@@ -712,6 +1062,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
           prefix: `cd ${relative} && `,
           changed,
           skipped,
+          todo,
         });
       }
     }
@@ -748,6 +1099,11 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         `.mcp.json is not valid JSON — left untouched; add the "fixui" server by hand:` +
           `\n    ${JSON.stringify(server)}`,
       );
+      todo.push(
+        `.mcp.json here is not valid JSON, so init left it alone. Fix it and add the "fixui"` +
+          ` MCP server to mcpServers: ${JSON.stringify(server)} — without it you have the` +
+          " picker but I cannot read the notes.",
+      );
     }
     if (parsed !== undefined) {
       if (parsed.mcpServers?.fixui !== undefined) {
@@ -782,13 +1138,23 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     changed.push(`.gitignore (${missing.join(", ")})`);
   }
 
-  // ── 6a. the lifetime edit: wrap the dev script ────────────────────────────
-  const stack = await detectStack(project, manifest);
+  // ── 6a. the lifetime edit: wrap the ROOT dev script ───────────────────────
+  // The root even in a workspace: one bridge covers every app in the repo, and
+  // wrapping each package's own dev script instead gives you several bridges
+  // racing for one inbox.
+  const appManifest =
+    app === undefined ? manifest : await reparse(path.join(app.dir, "package.json"));
+  const stack = appDir === undefined ? "unknown" : await detectStack(appDir, appManifest);
   if (manifest !== undefined) {
     const dev = manifest.scripts?.dev;
     if (dev === undefined) {
       skipped.push(
         'no "dev" script to wrap — start your dev server as `fixui dev -- <your dev command>`',
+      );
+      todo.push(
+        "There is no dev script at the repo root for init to wrap. Start the dev server as" +
+          " `fixui dev -- <your dev command>` (or add that as the root dev script) — without" +
+          " it there is no bridge and notes queue in the browser instead of reaching me.",
       );
     } else if (!/^\s*(?:npx\s+)?fixui(?:-bridge)?\s+dev\b/.test(dev)) {
       // Read again and edit *that*: the only version of this file safe to write
@@ -800,6 +1166,11 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
           `package.json changed underneath us — wrap the dev script as` +
             ` \`fixui dev -- ${dev}\` yourself`,
         );
+        todo.push(
+          `The root dev script was not wrapped: package.json changed while init was running.` +
+            ` Set it to \`fixui dev -- ${dev}\`, which is what gives the bridge the dev` +
+            " server's lifetime.",
+        );
       } else {
         current.scripts.dev = `fixui dev -- ${dev}`;
         const text = JSON.stringify(current, undefined, detectIndent(raw));
@@ -810,71 +1181,36 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     }
   }
 
-  // ── 6b. the injection edit: the shipped adapter ───────────────────────────
-  if (stack === "next-app") {
-    const relative = await findLayout(project);
-    const file = path.join(project, relative!);
-    const source = await readFile(file, "utf8");
-    if (source.includes("FixUiScript")) {
-      // Already wired.
-    } else {
-      const edited = withFixUiScript(source);
-      if (edited === undefined) {
-        skipped.push(
-          `${relative} does not have exactly one </body> — add \`${NEXT_IMPORT}\`` +
-            " and render `<FixUiScript />` last inside <body> yourself",
-        );
-      } else {
-        await writeFile(file, edited);
-        changed.push(`${relative}: <FixUiScript /> inside <body>`);
-      }
-    }
-
-    const configName = await findConfig(project, NEXT_CONFIGS);
-    if (configName === undefined) {
-      await writeFile(path.join(project, "next.config.mjs"), NEW_NEXT_CONFIG);
-      changed.push(`next.config.mjs: transpilePackages ${literal(TRANSPILE)}`);
-    } else {
-      const file = path.join(project, configName);
-      const source = await readFile(file, "utf8");
-      const edited = withTranspilePackages(source);
-      if (edited === undefined) {
-        skipped.push(
-          `${configName}: could not add transpilePackages — add ${literal(TRANSPILE)}` +
-            " to it by hand if the embed fails to compile",
-        );
-      } else if (edited !== source) {
-        await writeFile(file, edited);
-        changed.push(`${configName}: transpilePackages ${literal(TRANSPILE)}`);
-      }
-    }
-  } else if (stack === "vite") {
-    const configName = await findConfig(project, VITE_CONFIGS);
-    if (configName === undefined) {
-      skipped.push(`no vite.config.* found — add \`${VITE_IMPORT}\` and fixui() to plugins`);
-    } else {
-      const file = path.join(project, configName);
-      const source = await readFile(file, "utf8");
-      if (!source.includes("fixui/vite")) {
-        const edited = withVitePlugin(source);
-        if (edited === undefined) {
-          skipped.push(
-            `${configName} has no plugins array we could read — add \`${VITE_IMPORT}\`` +
-              " and fixui() to plugins yourself",
-          );
-        } else {
-          await writeFile(file, edited);
-          changed.push(`${configName}: fixui() in plugins`);
-        }
-      }
+  // ── 6b. the injection edit: the shipped adapter, in the app's package ─────
+  if (appDir !== undefined) {
+    const edits: Edits = { project, dir: appDir, changed, skipped, todo };
+    if (stack === "next-app") {
+      await injectNextLayout(edits);
+      await injectNextConfig(edits);
+    } else if (stack === "next-pages") {
+      await injectPagesApp(edits);
+      await injectNextConfig(edits);
+    } else if (stack === "vite") {
+      await injectVitePlugin(edits);
+    } else if (manifest !== undefined) {
+      // A project we recognise as a project, built with something we do not
+      // ship an adapter edit for. The table below says what the options are;
+      // the prompt says it in the form an agent can act on.
+      todo.push(
+        "init could not tell what this project renders with — no next or vite dependency" +
+          ` where it looked${appDir === project ? "" : ` (${shown(edits, ".")})`}. Read` +
+          ` ${ADAPTERS_DOC}, pick the adapter for this stack, and make the injection edit.` +
+          " The dev script is already wrapped, so that half is done.",
+      );
     }
   }
 
   // ── 7. say what happened, and the one thing to do next ────────────────────
+  const prompt = composePrompt(todo);
   const nextStep =
-    stack === "next-app" || stack === "vite"
+    prompt === undefined
       ? "run your dev server (`npm run dev`) and open the app — a fix-ui chip should appear."
-      : "wire the adapter above into your app, then run your dev server and confirm the chip appears.";
+      : "paste the prompt below to your agent — it names exactly what is left.";
 
   log(changed.length === 0 ? "fixui init: already set up — nothing to change." : "fixui init changed:");
   for (const line of changed) log(`  ✓ ${line}`);
@@ -891,15 +1227,26 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
     log("\nskipped (do these by hand):");
     for (const line of skipped) log(`  • ${line}`);
   }
-  if (stack !== "next-app" && stack !== "vite") {
+  if (stack === "unknown") {
     log(
-      `\n${stack === "next-pages" ? "Next (pages router)" : "This project's framework"} is not` +
-        " one we edit automatically. Pick the adapter:\n" +
-        ADAPTER_TABLE,
+      `\n${
+        appDir === undefined
+          ? "No adapter was inserted, because which package renders the app is not ours to guess."
+          : "This project's framework is not one we edit automatically."
+      } Pick the adapter:\n${ADAPTER_TABLE}`,
     );
   }
   log(`\n${HOW_TO_USE}`);
   log(`\nNext: ${nextStep}`);
+  // Last, and drawn: it is the thing to copy, so nothing scrolls past below it.
+  if (prompt !== undefined) log(`\n${drawPrompt(prompt)}`);
 
-  return { stack, manager, changed, skipped, nextStep };
+  return {
+    stack,
+    manager,
+    changed,
+    skipped,
+    ...(prompt === undefined ? {} : { agentPrompt: prompt }),
+    nextStep,
+  };
 }

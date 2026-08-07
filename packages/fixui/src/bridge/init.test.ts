@@ -105,6 +105,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 `;
 
+const PAGES_APP = `import type { AppProps } from "next/app";
+
+export default function App({ Component, pageProps }: AppProps) {
+  return <Component {...pageProps} />;
+}
+`;
+
 const VITE_CONFIG = `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -449,10 +456,15 @@ describe("Next (app router)", () => {
 });
 
 describe("Next (pages router)", () => {
-  it("wraps the dev script but leaves the injection to the agent", async () => {
+  async function pagesProject(app?: string): Promise<void> {
     await nextAppProject();
     await rm(path.join(project, "app"), { recursive: true });
     await write("pages/index.tsx", "export default function Home() { return null; }\n");
+    if (app !== undefined) await write("pages/_app.tsx", app);
+  }
+
+  it("renders the adapter in pages/_app.tsx and transpiles the embed", async () => {
+    await pagesProject(PAGES_APP);
 
     const result = await init();
 
@@ -461,10 +473,71 @@ describe("Next (pages router)", () => {
       scripts: Record<string, string>;
     };
     expect(manifest.scripts.dev).toBe("fixui dev -- next dev");
+
+    const app = await read("pages/_app.tsx");
+    expect(app).toContain('import { FixUi } from "fixui/react";');
+    expect(app).toMatch(/<Component \{\.\.\.pageProps\} \/>[\s\S]*<FixUi \/>/);
+    expect(app).toContain("</>");
+    expect(await read("next.config.mjs")).toContain('transpilePackages: ["fixui"]');
+  });
+
+  it("adds the adapter to a fragment that is already there", async () => {
+    await pagesProject(
+      `export default function App({ Component, pageProps }) {\n  return (\n    <>\n      <Component {...pageProps} />\n    </>\n  );\n}\n`,
+    );
+
+    await init();
+
+    const app = await read("pages/_app.tsx");
+    expect(app.match(/<>/g)).toHaveLength(1);
+    expect(app).toMatch(/<FixUi \/>\s*<\/>/);
+  });
+
+  it("says the bridge still has to be reached, because the client adapter cannot find it", async () => {
+    await pagesProject(PAGES_APP);
+
+    const result = await init();
+
+    // `<FixUi />` is a client component: it cannot read `.fix-ui.json`, so the
+    // chip appears but the notes may go nowhere. That is not "finished".
+    expect(result.agentPrompt).toBeDefined();
+    expect(result.agentPrompt).toMatch(/pages\/_app\.tsx/);
+    expect(result.agentPrompt).toMatch(/3499|bridgeUrl/);
+  });
+
+  it("edits nothing and names the file when there is no _app to edit", async () => {
+    await pagesProject();
+
+    const result = await init();
+
     expect(await read("pages/index.tsx")).toBe(
       "export default function Home() { return null; }\n",
     );
+    expect(result.skipped.join("\n")).toMatch(/_app/);
+    expect(result.agentPrompt).toMatch(/_app/);
     expect(logs.join("\n")).toMatch(/_app/);
+  });
+
+  it("skips an _app whose shape it cannot read", async () => {
+    const opaque = `export default function App(props) {\n  return render(props);\n}\n`;
+    await pagesProject(opaque);
+
+    const result = await init();
+
+    expect(await read("pages/_app.tsx")).toBe(opaque);
+    expect(result.skipped.join("\n")).toMatch(/_app\.tsx/);
+    expect(result.agentPrompt).toMatch(/FixUi/);
+  });
+
+  it("changes nothing the second time", async () => {
+    await pagesProject(PAGES_APP);
+    await init();
+    const before = await snapshot();
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
   });
 });
 
@@ -601,6 +674,17 @@ describe("a workspace", () => {
     );
   }
 
+  /** A Next app router package: the shape the twenty minutes were spent on. */
+  async function nextPackage(dir: string): Promise<void> {
+    await appPackage(dir, "next");
+    await write(`${dir}/app/layout.tsx`, NEXT_LAYOUT);
+  }
+
+  async function vitePackage(dir: string): Promise<void> {
+    await appPackage(dir, "vite");
+    await write(`${dir}/vite.config.ts`, VITE_CONFIG);
+  }
+
   it("installs into the package that renders the app, and at the root", async () => {
     await workspaceRoot();
     await appPackage("website");
@@ -681,6 +765,266 @@ describe("a workspace", () => {
     expect(await snapshot()).toEqual(before);
     expect(result.changed).toEqual([]);
     expect(installs).toEqual([]);
+  });
+
+  // ── the injection edit, in the package that renders the app ────────────────
+
+  it("wires the app package's layout and next.config, and wraps the ROOT dev script", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    await appPackage("packages/ui-lib", "typescript");
+
+    const result = await init();
+
+    expect(result.stack).toBe("next-app");
+
+    // The injection edit, in the package that renders the app.
+    const layout = await read("website/app/layout.tsx");
+    expect(layout).toContain('import { FixUiScript } from "fixui/next";');
+    expect(layout).toMatch(/<FixUiScript \/>\s*<\/body>/);
+    expect(await read("website/next.config.mjs")).toContain('transpilePackages: ["fixui"]');
+
+    // The lifetime edit, at the root: one bridge covers the whole repo.
+    const root = JSON.parse(await read("package.json")) as {
+      scripts: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(root.scripts.dev).toBe("fixui dev -- turbo dev");
+    expect(root.devDependencies.fixui).toBeDefined();
+    expect(await exists("app/layout.tsx")).toBe(false);
+    expect(await exists("next.config.mjs")).toBe(false);
+
+    // And the dependency where the import is resolved from.
+    const app = JSON.parse(await read("website/package.json")) as {
+      devDependencies: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    expect(app.devDependencies.fixui).toBeDefined();
+    // The package's own dev script is left alone: two bridges racing for one
+    // inbox is worse than none.
+    expect(app.scripts.dev).toBe("next dev");
+
+    // Nothing is left for anyone to do, so no prompt to paste.
+    expect(result.skipped).toEqual([]);
+    expect(result.agentPrompt).toBeUndefined();
+    expect(logs.join("\n")).not.toMatch(/Paste this/i);
+  });
+
+  it("changes nothing the second time (Next in a subdirectory)", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    await init();
+    const before = await snapshot();
+    installs.length = 0;
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+    expect(installs).toEqual([]);
+  });
+
+  it("adds the plugin to a Vite app in a subdirectory", async () => {
+    await workspaceRoot();
+    await vitePackage("apps/storefront");
+    await write("pnpm-workspace.yaml", 'packages:\n  - "apps/*"\n');
+
+    const result = await init();
+
+    expect(result.stack).toBe("vite");
+    const config = await read("apps/storefront/vite.config.ts");
+    expect(config).toContain('import { fixui } from "fixui/vite";');
+    expect(config).toMatch(/plugins: \[[\s\S]*fixui\(\)/);
+
+    const root = JSON.parse(await read("package.json")) as { scripts: Record<string, string> };
+    expect(root.scripts.dev).toBe("fixui dev -- turbo dev");
+
+    const app = JSON.parse(await read("apps/storefront/package.json")) as {
+      devDependencies: Record<string, string>;
+    };
+    expect(app.devDependencies.fixui).toBeDefined();
+    expect(result.agentPrompt).toBeUndefined();
+  });
+
+  it("changes nothing the second time (Vite in a subdirectory)", async () => {
+    await workspaceRoot();
+    await write("pnpm-workspace.yaml", 'packages:\n  - "apps/*"\n');
+    await vitePackage("apps/storefront");
+    await init();
+    const before = await snapshot();
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+  });
+
+  it("edits neither package when two of them qualify, and names both", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    await vitePackage("packages/admin");
+
+    const result = await init();
+
+    expect(await read("website/app/layout.tsx")).toBe(NEXT_LAYOUT);
+    expect(await read("packages/admin/vite.config.ts")).toBe(VITE_CONFIG);
+    expect(await exists("website/next.config.mjs")).toBe(false);
+
+    const said = [...result.skipped, result.agentPrompt ?? ""].join("\n");
+    expect(said).toMatch(/website/);
+    expect(said).toMatch(/admin/);
+    expect(result.agentPrompt).toBeDefined();
+    expect(logs.join("\n")).toMatch(/Paste this to your agent/);
+  });
+
+  it("changes nothing the second time (two candidates)", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    await vitePackage("packages/admin");
+    await init();
+    const before = await snapshot();
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+  });
+
+  it("edits nothing and prints a prompt when no package qualifies", async () => {
+    await workspaceRoot();
+    await appPackage("packages/ui-lib", "typescript");
+
+    const result = await init();
+
+    expect(result.agentPrompt).toBeDefined();
+    expect(logs.join("\n")).toMatch(/Paste this to your agent/);
+    // Still a complete non-interactive setup of everything it could do.
+    expect(await exists(".claude/skills/fix-ui/SKILL.md")).toBe(true);
+    const root = JSON.parse(await read("package.json")) as { scripts: Record<string, string> };
+    expect(root.scripts.dev).toBe("fixui dev -- turbo dev");
+  });
+
+  it("changes nothing the second time (no candidates)", async () => {
+    await workspaceRoot();
+    await appPackage("packages/ui-lib", "typescript");
+    await init();
+    const before = await snapshot();
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+  });
+
+  it("skips a layout it cannot parse and names the file in the prompt", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    const opaque = "export default function L() { return null; }\n";
+    await write("website/app/layout.tsx", opaque);
+
+    const result = await init();
+
+    expect(await read("website/app/layout.tsx")).toBe(opaque);
+    expect(result.skipped.join("\n")).toMatch(/website\/app\/layout\.tsx/);
+    expect(result.agentPrompt).toMatch(/website\/app\/layout\.tsx/);
+    expect(result.agentPrompt).toMatch(/FixUiScript/);
+    // The edits it could make it still made.
+    expect(await read("website/next.config.mjs")).toContain('transpilePackages: ["fixui"]');
+  });
+
+  it("changes nothing the second time (an unparseable layout)", async () => {
+    await workspaceRoot();
+    await nextPackage("website");
+    await write("website/app/layout.tsx", "export default function L() { return null; }\n");
+    await init();
+    const before = await snapshot();
+
+    const result = await init();
+
+    expect(await snapshot()).toEqual(before);
+    expect(result.changed).toEqual([]);
+  });
+
+  it("still edits the root when the root itself is the app", async () => {
+    await nextAppProject({ workspaces: ["packages/*"] });
+    await appPackage("packages/ui-lib", "typescript");
+
+    const result = await init();
+
+    expect(result.stack).toBe("next-app");
+    expect(await read("app/layout.tsx")).toContain("FixUiScript");
+    expect(result.agentPrompt).toBeUndefined();
+  });
+});
+
+// ── the paste-ready prompt ──────────────────────────────────────────────────
+
+/**
+ * Whatever init could not finish, it hands to the agent in the one form an
+ * agent can act on: words, not a link and not a table. The alternative is what
+ * actually happened — twenty minutes of rediscovering what init already knew.
+ */
+describe("the prompt to paste", () => {
+  it("is printed, in full, when the framework is not one we edit", async () => {
+    await write(
+      "package.json",
+      `${JSON.stringify({ name: "demo", scripts: { dev: "node server.js" } }, undefined, 2)}\n`,
+    );
+
+    const result = await init();
+
+    expect(result.agentPrompt).toBeDefined();
+    const said = logs.join("\n");
+    expect(said).toMatch(/Paste this to your agent/);
+    // The actual words, not a pointer to them.
+    expect(said).toMatch(/adapters\.md/);
+    expect(said).toMatch(/chip/);
+    // And the block is drawn, so it is obvious where it starts and ends.
+    expect(said).toMatch(/┌─ Paste this to your agent ─+┐/);
+    expect(said).toMatch(/└─+┘/);
+  });
+
+  it("names the one edit that is left rather than describing the whole job", async () => {
+    await nextAppProject();
+    await write("app/layout.tsx", "export default function L() { return null; }\n");
+
+    const result = await init();
+
+    expect(result.agentPrompt).toMatch(/app\/layout\.tsx/);
+    expect(result.agentPrompt).toMatch(/FixUiScript/);
+    // The parts init did finish are not asked for again.
+    expect(result.agentPrompt).not.toMatch(/dev script/);
+  });
+
+  it("is not printed when init finished the job (Next)", async () => {
+    await nextAppProject();
+
+    const result = await init();
+
+    expect(result.skipped).toEqual([]);
+    expect(result.agentPrompt).toBeUndefined();
+    expect(logs.join("\n")).not.toMatch(/Paste this/i);
+    expect(logs.join("\n")).toMatch(/Next: run your dev server/);
+  });
+
+  it("is not printed when init finished the job (Vite)", async () => {
+    await viteProject();
+
+    const result = await init();
+
+    expect(result.agentPrompt).toBeUndefined();
+    expect(logs.join("\n")).not.toMatch(/Paste this/i);
+  });
+
+  it("asks no questions and reads no input", async () => {
+    await write("package.json", `${JSON.stringify({ name: "demo" }, undefined, 2)}\n`);
+
+    const result = await init();
+
+    // A prompt on stdin would hang the agent that ran this, with nothing to
+    // diagnose. Everything undone is said, and nothing is asked.
+    expect(result.agentPrompt).toBeDefined();
+    expect(logs.join("\n")).not.toMatch(/\? \[y\/n\]|\(y\/N\)/i);
   });
 });
 
