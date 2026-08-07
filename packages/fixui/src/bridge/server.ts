@@ -110,6 +110,14 @@ export interface BridgeServer {
    * notification — docs/agent-integration.md).
    */
   onInboxChange(listener: (project: string) => void): () => void;
+  /**
+   * Announce an inbox mutation this server did not make itself — the in-process
+   * MCP `resolve_feedback` is the one that matters (mcp.ts `inProcessTools`),
+   * because it writes the inbox without ever touching a route. Same two
+   * consequences as an HTTP write: the watchers hear it (`feedback/updated`)
+   * and every connected page of that project gets `inbox-changed`.
+   */
+  inboxChanged(project: string): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -302,8 +310,14 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   let boundPort = opts.port;
   let http: Server | undefined;
 
-  /** Tell the watchers the inbox changed. Never on the request's critical path:
-   *  a broken listener is the listener's problem, not the writer's. */
+  /**
+   * Tell everyone the inbox changed: the watchers (an MCP `feedback/updated`
+   * in daemon mode) and the connected pages (`inbox-changed` on the review
+   * channel, so the chip's badge stops going stale behind an agent).
+   *
+   * Never on the request's critical path: a broken listener is the listener's
+   * problem, not the writer's, and the broker's own send is already guarded.
+   */
   function inboxChanged(project: string): void {
     for (const listener of [...inboxListeners]) {
       try {
@@ -312,6 +326,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
         // Nothing to do — the entry is already on disk and answered.
       }
     }
+    broker.inboxChanged(project);
   }
 
   const api: BridgeServer = {
@@ -331,6 +346,8 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
         inboxListeners.delete(listener);
       };
     },
+
+    inboxChanged,
 
     start() {
       return new Promise((resolve, reject) => {

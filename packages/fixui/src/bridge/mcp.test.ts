@@ -338,6 +338,42 @@ it("keeps a held request_review alive with progress notifications until it resol
 });
 
 /**
+ * The reported bug, at its source: an agent calling `resolve_feedback` on the
+ * daemon's own MCP server removed the entry and told nobody — not the pages on
+ * the review channel (so the chip's badge kept the old number until it was
+ * clicked) and not the inbox watchers. The HTTP routes always announced; this
+ * path went straight to storage.
+ */
+it("in-process resolve_feedback announces the change to the pages and to the watchers", async () => {
+  const dir = await tempProject([sampleEntry("a", "make this bigger"), sampleEntry("b", "and this")]);
+  const bridge = createBridgeServer({ port: 0, defaultProject: dir });
+  const events: { event: string; data: Record<string, unknown> }[] = [];
+  const page = bridge.broker.subscribe(dir, {
+    send: (event, data) => events.push({ event, data }),
+  });
+  const watched: string[] = [];
+  bridge.onInboxChange((project) => watched.push(project));
+
+  try {
+    const client = await linkedTools(inProcessTools(bridge.broker, dir, bridge.inboxChanged));
+
+    expect(await callJson(client, "resolve_feedback", { id: "a" })).toEqual({ ok: true });
+    expect(events.filter((entry) => entry.event === "inbox-changed")).toEqual([
+      { event: "inbox-changed", data: { project: dir } },
+    ]);
+    expect(watched).toEqual([dir]);
+
+    // An id the inbox never had removes nothing, so it announces nothing.
+    expect(await callJson(client, "resolve_feedback", { id: "never-existed" })).toEqual({ ok: true });
+    expect(events.filter((entry) => entry.event === "inbox-changed")).toHaveLength(1);
+    expect(watched).toEqual([dir]);
+  } finally {
+    page();
+    bridge.broker.stop();
+  }
+});
+
+/**
  * The client's own cancellation — `notifications/cancelled`, which is what Esc
  * in Claude Code sends. The review must end there, in BOTH process modes: the
  * agent that asked is gone, nobody will ever read the outcome, and a review

@@ -319,10 +319,22 @@ export async function serveMcpOverStdio(
   await server.connect(new StdioServerTransport());
 }
 
-/** Owner mode: this process owns the broker and the inbox files. Reachable
- *  only in-process — under `fixui dev` the bridge's stdio belongs to the dev
- *  command, so the tools an agent talks to are always the HTTP ones below. */
-export function inProcessTools(broker: ReviewBroker, defaultProject: string): ReviewTools {
+/**
+ * Owner mode: this process owns the broker and the inbox files. Reachable
+ * only in-process — under `fixui dev` the bridge's stdio belongs to the dev
+ * command, so the tools an agent talks to are always the HTTP ones below.
+ *
+ * `announce` is the server's `inboxChanged` (server.ts). Without it a
+ * `resolve_feedback` here would write the inbox and tell nobody, which is
+ * exactly the stale badge this signal exists to stop: the HTTP routes announce,
+ * so this path must too, or the same removal means two different things
+ * depending on which door the agent came through.
+ */
+export function inProcessTools(
+  broker: ReviewBroker,
+  defaultProject: string,
+  announce?: (project: string) => void,
+): ReviewTools {
   const resolve = (requested?: string): string => {
     const project = resolveProject(requested, defaultProject);
     if (!project) throw new ToolError(INVALID_PROJECT);
@@ -334,7 +346,12 @@ export function inProcessTools(broker: ReviewBroker, defaultProject: string): Re
       return { entries: await listEntries(resolve(project)) };
     },
     async resolveFeedback(id, project) {
-      await removeEntry(resolve(project), id);
+      const dir = resolve(project);
+      const removed = await removeEntry(dir, id);
+      // Only a real removal is a change: `{ok:true}` also answers an unknown id,
+      // and announcing that would make the signal mean nothing (server.ts says
+      // the same about `DELETE /entries/:id`).
+      if (removed) announce?.(dir);
       // `{ok:true}` means "the entry is not in the inbox", matching what
       // `DELETE /entries/:id` answers — the proxy cannot tell more than that.
       return { ok: true };

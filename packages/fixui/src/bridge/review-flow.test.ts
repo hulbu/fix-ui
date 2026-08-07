@@ -373,6 +373,71 @@ it("keeps the stream alive with comment-line heartbeats", async () => {
   expect(stream.events.map((event) => event.event)).toEqual(["surface"]);
 });
 
+// ── inbox-changed (the badge must not go stale) ─────────────────────────────
+// The page only re-read the inbox when the user opened the panel, so an agent
+// clearing entries left a stale count on the chip until it was clicked. The
+// bridge already knew; it just never said so to the browser.
+
+/** Every `inbox-changed` frame this stream has seen. */
+function inboxChanges(stream: SseStream): SseEvent[] {
+  return stream.events.filter((event) => event.event === "inbox-changed");
+}
+
+it("inbox-changed reaches the project's subscribers on create and on a real delete", async () => {
+  const here = await openStream(projectDir, { label: "here" });
+  const elsewhere = await openStream(otherDir, { label: "elsewhere" });
+  await elsewhere.surfaceId();
+
+  await postEntry("n1", "tighten the spacing");
+  expect(await here.next("inbox-changed")).toEqual({ project: projectDir });
+
+  const query = `?project=${encodeURIComponent(projectDir)}`;
+  expect((await fetch(`${base}/entries/n1${query}`, { method: "DELETE" })).status).toBe(200);
+  expect(await here.next("inbox-changed", 2)).toEqual({ project: projectDir });
+
+  // The prototype's body-style delete announces too — one transport client,
+  // one signal, whichever route it happens to use.
+  await postEntry("n2", "and this one");
+  await here.next("inbox-changed", 3);
+  const removed = await fetch(`${base}/entries`, {
+    method: "DELETE",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ id: "n2", project: projectDir }),
+  });
+  expect(removed.status).toBe(200);
+  await here.next("inbox-changed", 4);
+
+  // An unknown id answers `{ok:true}` and changes nothing, so it says nothing —
+  // otherwise the event would stop meaning anything.
+  await fetch(`${base}/entries/never-existed${query}`, { method: "DELETE" });
+  await new Promise((done) => setTimeout(done, 150));
+  expect(inboxChanges(here)).toHaveLength(4);
+
+  // …and another project's page never heard a word of it.
+  expect(inboxChanges(elsewhere)).toEqual([]);
+});
+
+it("inbox-changed reaches every surface of a project, targeted review or not", async () => {
+  const one = await openStream(projectDir, { label: "one" });
+  const two = await openStream(projectDir, { label: "two" });
+
+  // A review aimed at ONE page narrows `review-requested`; the inbox is not the
+  // review's, it is the project's, so both pages hear about it.
+  const call = requestReview({
+    prompt: "only window two",
+    surfaceId: await two.surfaceId(),
+    timeoutSeconds: 5,
+  });
+  const { reviewId } = await two.next("review-requested");
+
+  await postEntry("n1", "a note left during the review");
+  expect(await one.next("inbox-changed")).toEqual({ project: projectDir });
+  expect(await two.next("inbox-changed")).toEqual({ project: projectDir });
+
+  await postVerdict(reviewId, { verdict: "changes", entryIds: ["n1"] });
+  expect((await body(await call)).verdict).toBe("changes");
+});
+
 // ── Surfaces (docs/agent-integration.md "Surfaces") ─────────────────────────
 // Routing by project alone cannot tell two windows on the same site apart. A
 // surface is one connected page, and it is what an agent enumerates and aims at.

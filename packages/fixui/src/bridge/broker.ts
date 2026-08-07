@@ -90,9 +90,21 @@ export interface ReviewRequest {
   signal?: AbortSignal;
 }
 
-/** `surface` is the handshake — the id this subscription was given, sent before
- *  anything else; the other two are the review itself. */
-export type ChannelEvent = "surface" | "review-requested" | "review-cancelled";
+/**
+ * `surface` is the handshake — the id this subscription was given, sent before
+ * anything else; the next two are the review itself.
+ *
+ * `inbox-changed` belongs to neither: it says the project's inbox is not what
+ * the page last read, whoever changed it and whether or not a review is
+ * running. Without it the picker only ever re-read the inbox when the user
+ * opened the panel, so an agent resolving entries left a stale count on the
+ * chip until it was clicked.
+ */
+export type ChannelEvent =
+  | "surface"
+  | "review-requested"
+  | "review-cancelled"
+  | "inbox-changed";
 
 export interface ReviewSubscriber {
   send(event: ChannelEvent, data: JsonRecord): void;
@@ -125,6 +137,13 @@ export interface ReviewBroker {
   ): () => void;
   /** Connected pages, newest first; scoped to one project when given. */
   listSurfaces(project?: string): Surface[];
+  /**
+   * Tell every page of a project that its inbox moved. Deliberately not tied to
+   * a review: notes are created and resolved outside one all the time, and the
+   * page's badge is wrong the moment either happens. Fire-and-forget, like every
+   * other send here — a dead stream costs the others nothing.
+   */
+  inboxChanged(project: string): void;
   /** Resolves only when the review resolves. Throws `BusyError` when the
    *  project already has one pending. */
   requestReview(request: ReviewRequest): Promise<ReviewOutcome>;
@@ -325,6 +344,10 @@ export function createReviewBroker(): ReviewBroker {
         if (project === undefined || surface.project === project) listed.push({ ...surface });
       }
       return listed.reverse(); // newest first
+    },
+
+    inboxChanged(project) {
+      broadcast(project, "inbox-changed", { project });
     },
 
     requestReview(request) {
