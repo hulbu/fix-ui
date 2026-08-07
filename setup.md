@@ -18,7 +18,9 @@ Run this in the project root:
 npx fixui init
 ```
 
-It installs the package, registers the MCP server, drops in the skill, and — when it recognizes the framework — makes both edits for you. If it prints an adapter table instead, do step 2 by hand.
+It installs the package, registers the MCP server, drops in the skill, and — when it recognizes the framework — makes both edits for you. In a workspace it finds the package that renders the app and makes the adapter edit *there*, while the dev script it wraps is the root one.
+
+Whatever it could not finish, it prints as a prompt you can paste straight to your agent. If that block appears, hand it over; otherwise skip to step 3.
 
 ## 2. Two edits
 
@@ -44,7 +46,7 @@ ESM, so it is no longer load-bearing — leave it, it costs nothing:
 transpilePackages: ["fixui"]
 ```
 
-**Monorepo:** `fixui` goes in the package that renders the app *and* at the workspace root — the app needs it to resolve the import, the root needs the `fixui` bin for the wrapped dev script. `fixui init` does both. Wrap the *root* dev script — one bridge covers every app in the repo.
+**Monorepo:** `fixui` goes in the package that renders the app *and* at the workspace root — the app needs it to resolve the import, the root needs the `fixui` bin for the wrapped dev script. The adapter line goes in that same package. `fixui init` does all three when exactly one package depends on `next` or `vite`; when several do, or none does, it names them and stops rather than guess. Wrap the *root* dev script — one bridge covers every app in the repo.
 
 ## 3. Check it worked
 

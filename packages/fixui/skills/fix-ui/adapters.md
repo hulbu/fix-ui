@@ -106,7 +106,7 @@ Report the integration done only after you have seen the chip.
 
 Three rules, and they are not the same rule.
 
-**`fixui` goes in the package that renders the app** — `website/package.json`, not only the workspace root. With pnpm's isolated `node_modules`, a root-level install is simply not on that package's resolution path, and the import fails however correct the adapter line is. Keep it at the root as well, so the `fixui` bin the root dev script calls resolves there; `fixui init` installs it in both places.
+**`fixui` goes in the package that renders the app** — `website/package.json`, not only the workspace root. With pnpm's isolated `node_modules`, a root-level install is simply not on that package's resolution path, and the import fails however correct the adapter line is. Keep it at the root as well, so the `fixui` bin the root dev script calls resolves there; `fixui init` installs it in both places, and makes the adapter edit in the app package too. It only does that when exactly one package depends on `next` or `vite` — with several candidates, or none, it names what it found and leaves the edit to you.
 
 **`fixui dev` wraps the ROOT dev script** — whatever command launches the whole stack (`turbo dev`, `pnpm -r dev`, a `run.sh`). One bridge then covers every app in the repo; wrapping each package's own dev script instead gives you several bridges racing for one inbox.
 

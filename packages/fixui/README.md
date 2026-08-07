@@ -17,12 +17,17 @@ registers the MCP server and drops the agent skill into the project:
 npx fixui init
 ```
 
+In a workspace it finds the package that renders the app and wires *that* one,
+while the dev script it wraps is the root's — one bridge covers the repo. It
+never prompts, and anything it could not finish it prints as a paste-ready
+prompt for your agent, naming the package and the file.
+
 ## Adapters
 
 | Stack | The line |
 | --- | --- |
 | Next (app router) | `import { FixUiScript } from "fixui/next"` — render `<FixUiScript />` last inside `<body>` in `app/layout.tsx` |
-| Next (pages router) | the same component, rendered in `pages/_app.tsx` |
+| Next (pages router) | `import { FixUi } from "fixui/react"` — render `<FixUi />` beside `<Component …>` in `pages/_app.tsx` |
 | Vite | `import { fixui } from "fixui/vite"` — add `fixui()` to `plugins` |
 | React, no framework | `import { FixUi } from "fixui/react"` — render `<FixUi />` once |
 | plain HTML | `<script src="…/fixui/dist/fixui.global.js" data-port … data-token …>` |
