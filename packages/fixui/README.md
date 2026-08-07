@@ -3,15 +3,31 @@
 Point at any UI element in your running app and leave a note for your coding
 agent.
 
+## Install — paste this to your agent
+
+```
+Fetch and execute the instructions to set me up for fix-ui from
+https://raw.githubusercontent.com/hulbu/fix-ui/main/prompt.md
+```
+
+That is the whole install. Your agent reads the page, runs the installer, wires
+the adapter for whatever framework this is, and confirms the picker actually
+appears before telling you it is done.
+
+Then: click the orange circle, point at something, describe what should change,
+and say **`fix ui`**.
+
+---
+
 One package, two halves. The **adapter layer** is the one line you add to a
 Next, Vite or plain-HTML app to put the picker on the page. The **bridge** is
 the `fixui` bin: a local daemon that receives the notes into
 `.fix-ui.jsonl`, and an MCP server so an agent can read them, resolve them and
 ask you to review its own work.
 
-You almost certainly do not want to install this by hand. Run the installer
-instead — it adds the dependency, wires the adapter, wraps your dev script,
-registers the MCP server and drops the agent skill into the project:
+## Install by hand
+
+If you would rather not hand it to an agent, the installer does the same work:
 
 ```sh
 npx fixui init

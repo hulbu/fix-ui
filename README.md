@@ -17,6 +17,16 @@ is how the loop closes.
 > working prototype (`tools/ui-feedback` in the hulbu monorepo) that we use
 > daily to build [hulbu](https://hulbu.com) itself. License: MIT.
 
+## Install — paste this to your agent
+
+```
+Fetch and execute the instructions to set me up for fix-ui from
+https://raw.githubusercontent.com/hulbu/fix-ui/main/prompt.md
+```
+
+Your agent reads that page, installs, wires your framework, and verifies the
+picker appears before calling it done. Prefer to do it yourself? `npx fixui init`.
+
 ## The loop
 
 ```
