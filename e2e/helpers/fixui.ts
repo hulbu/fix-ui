@@ -33,6 +33,15 @@ export const SUBMIT = "[data-uifb-submit]";
 export const MINIMIZE = "[data-uifb-min]";
 /** The note count on the chip. Absent entirely when the inbox is empty. */
 export const BADGE = "[data-uifb-badge]";
+/** The per-note delete button — one per row in the panel. */
+export const DEL = "[data-uifb-del]";
+/** The chip's glyph, in its own element so the armed pulse can target it. */
+export const GLYPH = "[data-uifb-glyph]";
+/** The panel's header bar, and the dotted grip that says it can be dragged. */
+export const HEAD = "[data-uifb-head]";
+export const GRIP = "[data-uifb-grip]";
+/** Any mark the picker draws for itself — an inline SVG path, never a glyph. */
+export const MARK = "[data-uifb-mark]";
 
 export const test = base.extend<{ bridge: Bridge }>({
   bridge: async ({}, use) => {

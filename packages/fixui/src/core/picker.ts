@@ -336,11 +336,22 @@ export function createPicker(opts: PickerOptions): Picker {
     /* A line-height of 1 so the line box is the glyph and nothing else — the
        half-leading is what the flex box would otherwise be centring. */
     [${NS}-glyph]{display:block;line-height:1;}
+    /* Every mark the picker draws itself (see \`svgMark\`). \`display:block\`
+       because an inline SVG sits on the text baseline, and a baseline is the
+       one thing a flex box centring its own content must not be handed. */
+    [${NS}-mark]{display:block;flex:none;}
     [${NS}-chip][${NS}-pulse] [${NS}-glyph]{
       animation:${NS}-glyph-pulse 1.8s ease-in-out infinite;}
-    [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
+    /* A count in a 19px disc — so the same flex centring as every other mark,
+       and \`box-sizing:border-box\` so \`min-width\` means the disc's own width.
+       Content-box was measuring the 8px of padding ON TOP of the 19px floor,
+       which made a one-digit count a 27x19 oval rather than a circle. The
+       padding still does its job: it is what a three-digit count grows by. */
+    [${NS}-badge]{position:absolute;top:-5px;right:-5px;box-sizing:border-box;
+      min-width:19px;height:19px;
+      display:flex;align-items:center;justify-content:center;line-height:1;
       border-radius:999px;background:${BADGE_BG};color:${BADGE_FG};
-      font:700 11px/19px system-ui,sans-serif;padding:0 4px;
+      font:700 11px system-ui,sans-serif;padding:0 4px;
       box-shadow:0 0 0 2px ${BADGE_RING};}
     [${NS}-panel]{position:fixed;inset:auto;margin:0;z-index:2147483601;
       right:16px;bottom:70px;
@@ -358,7 +369,8 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-grip]{flex:none;width:8px;height:12px;
       background-image:radial-gradient(#94a3b8 1.1px,transparent 1.3px);
       background-size:4px 4px;background-position:0 0;}
-    [${NS}-min]{flex:none;display:flex;align-items:center;justify-content:center;
+    [${NS}-min]{flex:none;box-sizing:border-box;
+      display:flex;align-items:center;justify-content:center;
       width:20px;height:20px;padding:0;border:0;border-radius:6px;cursor:pointer;
       background:transparent;color:#94a3b8;}
     [${NS}-min]:hover{background:#00000010;color:#1c1c1c;}
@@ -388,12 +400,30 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-row] p b{display:block;font-weight:600;}
     [${NS}-row] p span{display:block;margin-top:2px;color:#00000066;
       font:11px ui-monospace,monospace;word-break:break-all;}
+    /* The chip's claim again, on the other round button. This one used to read
+       \`font:600 13px/22px\` around a U+00D7, which is line-height doing the
+       centring — and that only lands when the glyph's own ink happens to be
+       symmetric about the baseline, which U+00D7's is not. It is a drawn mark
+       now (see \`cross\`), centred by the flex box.
+       \`box-sizing\` and \`padding:0\` are load-bearing, not tidiness: a host
+       page's own \`button{padding:...}\` cascades into this UI, and under
+       content-box that padding was widening the 22px disc into a 28x22 oval
+       with the glyph shoved out of it.
+       24px rather than the 22px this rule used to declare, because pinning the
+       box down is what takes the accidental width away with it: on a page that
+       styles its buttons this was 28 across, and the smallest control in the
+       product should not come out of a centring fix narrower than it went in.
+       24 is also the floor WCAG 2.2 sets for a target this shape. */
     [${NS}-del]{border:0;background:#00000010;color:#1c1c1c;cursor:pointer;
-      width:22px;height:22px;border-radius:999px;font:600 13px/22px system-ui;
-      flex:none;}
+      flex:none;box-sizing:border-box;padding:0;
+      display:flex;align-items:center;justify-content:center;
+      width:24px;height:24px;border-radius:999px;}
     [${NS}-del]:hover{background:${accent};color:#fff;}
-    [${NS}-pick]{width:100%;border:0;cursor:pointer;border-radius:999px;
-      padding:8px 14px;background:${accent};color:#fff;
+    /* A row, so the mark and the label are centred as one — and the mark is
+       drawn rather than typeset for the same reason the delete cross is. */
+    [${NS}-pick]{width:100%;box-sizing:border-box;border:0;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;gap:7px;
+      border-radius:999px;padding:8px 14px;background:${accent};color:#fff;
       font:600 13px system-ui,sans-serif;margin-top:2px;}
     /* While an agent is waiting, the panel has exactly one primary action and
        it is the one that answers them. Picking is still available — the human
@@ -847,26 +877,81 @@ ${CURSOR_CSS}  `;
   chip?.addEventListener("pointerdown", chipDrag.onStart);
 
   /**
-   * A downward chevron, drawn inline: no icon package, no icon font, no emoji.
-   * CSS flips it when the panel is minimized rather than swapping in a second
-   * mark — it is the same control, pointing the other way.
+   * A mark the picker draws itself: no icon package, no icon font, no emoji.
+   *
+   * Drawn rather than typeset because that is the only way the INK is centred
+   * and not merely the box around it. `system-ui` is a different font on every
+   * platform, and a glyph's ink sits wherever that font's metrics put it —
+   * U+00D7 rides high in most of them, which is exactly why the delete button
+   * looked broken while its CSS looked reasonable. A path in a square viewBox
+   * has no metrics to be at the mercy of: every mark below is symmetric about
+   * the viewBox centre once the round cap adds `stroke-width / 2` at each end,
+   * so a flex box centring the SVG centres what the user actually sees.
+   *
+   * Every `d` is absolute `M x y L x y` points only — the extents are then the
+   * points themselves, which is what lets a unit test check that symmetry
+   * without a browser (picker.test.ts, "every mark is centred by layout, never
+   * by line-height"). The browser measures the result for real in
+   * e2e/tests/icons.spec.ts, which is the assertion that catches this class of
+   * bug before a human has to notice it.
    */
-  function chevron(): SVGSVGElement {
+  function svgMark(size: number, strokeWidth: number, paths: string[]): SVGSVGElement {
     const svgNs = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNs, "svg");
-    svg.setAttribute("viewBox", "0 0 14 14");
-    svg.setAttribute("width", "14");
-    svg.setAttribute("height", "14");
+    svg.setAttribute(`${NS}-mark`, "");
+    svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+    svg.setAttribute("width", String(size));
+    svg.setAttribute("height", String(size));
+    // Decorative in every case: each of these sits inside a control that
+    // already carries its own accessible name.
     svg.setAttribute("aria-hidden", "true");
-    const path = document.createElementNS(svgNs, "path");
-    path.setAttribute("d", "M3.5 5.5L7 9l3.5-3.5");
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "currentColor");
-    path.setAttribute("stroke-width", "1.8");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    svg.append(path);
+    for (const d of paths) {
+      const path = document.createElementNS(svgNs, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", String(strokeWidth));
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.append(path);
+    }
     return svg;
+  }
+
+  /**
+   * A downward chevron. CSS flips it when the panel is minimized rather than
+   * swapping in a second mark — it is the same control, pointing the other way.
+   *
+   * The vertical points are 5.25 and 8.75, not 5.5 and 9: the round cap grows
+   * the ink by 0.9 at each end, and only these two put the result's centre on
+   * the viewBox's own centre of 7.
+   */
+  function chevron(): SVGSVGElement {
+    return svgMark(14, 1.8, ["M3.5 5.25L7 8.75L10.5 5.25"]);
+  }
+
+  /**
+   * Delete. Two crossed strokes rather than U+00D7: a multiplication sign is
+   * optically light at this size, it is the glyph whose high-riding ink made
+   * this control look damaged in the first place, and — being a character —
+   * it renders as whatever `system-ui` resolves to on the platform. A drawn
+   * cross is the same weight as the chevron above it on every one of them.
+   */
+  function cross(): SVGSVGElement {
+    return svgMark(12, 1.7, ["M3.4 3.4L8.6 8.6", "M8.6 3.4L3.4 8.6"]);
+  }
+
+  /**
+   * The picker's own mark — the open-centre cross the chip wears, drawn at the
+   * size the Pick button needs it.
+   */
+  function pickMark(): SVGSVGElement {
+    return svgMark(13, 1.9, [
+      "M6.5 1L6.5 4.3",
+      "M6.5 8.7L6.5 12",
+      "M1 6.5L4.3 6.5",
+      "M8.7 6.5L12 6.5",
+    ]);
   }
 
   /**
@@ -981,7 +1066,7 @@ ${CURSOR_CSS}  `;
       const del = document.createElement("button");
       del.setAttribute(`${NS}-del`, "");
       del.setAttribute("aria-label", "Delete note");
-      del.textContent = "×";
+      del.append(cross());
       del.addEventListener("click", () => void deleteEntry(entry.id));
       row.append(text, del);
       panel.append(row);
@@ -989,7 +1074,12 @@ ${CURSOR_CSS}  `;
 
     const pick = document.createElement("button");
     pick.setAttribute(`${NS}-pick`, "");
-    pick.textContent = "✛ Pick an element";
+    // The mark is its own element beside the label rather than a character in
+    // front of it: a literal "✛ " is read out by a screen reader, and the space
+    // between it and the label is whatever the font says it is.
+    const pickLabel = document.createElement("span");
+    pickLabel.textContent = "Pick an element";
+    pick.append(pickMark(), pickLabel);
     pick.addEventListener("click", () => {
       // Normally the panel gets out of the way of the thing being picked. Not
       // during a session: the prompt and the button that ends it live in here,

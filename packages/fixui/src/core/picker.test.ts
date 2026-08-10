@@ -1524,6 +1524,61 @@ describe("the crosshair while armed", () => {
 });
 
 /**
+ * The ink a drawn mark actually paints, in viewBox units.
+ *
+ * jsdom has no `getBBox` and lays nothing out — but it does not need to. Every
+ * mark the picker draws is absolute `M x y L x y` points, so the extremes ARE
+ * the points, grown by half a stroke width at each end because the caps and
+ * joins are round. That is the same arithmetic the browser does, and it is
+ * what lets "is this mark symmetric?" be a unit test rather than a screenshot.
+ */
+function inkOf(svg: SVGSVGElement): { x: [number, number]; y: [number, number]; box: number } {
+  const paths = [...svg.querySelectorAll("path")];
+  expect(paths.length).toBeGreaterThan(0);
+  const half = Number(paths[0]!.getAttribute("stroke-width")) / 2;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const path of paths) {
+    const d = path.getAttribute("d")!;
+    // The parser above is only honest for this one shape of path data — so the
+    // shape is asserted rather than assumed.
+    expect(d).toMatch(/^(?:[ML]\s*-?[\d.]+\s+-?[\d.]+\s*)+$/);
+    // Round caps and joins alike: the outline is the path grown uniformly.
+    expect(path.getAttribute("stroke-linecap")).toBe("round");
+    expect(path.getAttribute("stroke-linejoin")).toBe("round");
+    // A filled path's ink would be its interior, not its outline.
+    expect(path.getAttribute("fill")).toBe("none");
+    expect(Number(path.getAttribute("stroke-width"))).toBe(half * 2);
+    const nums = d.match(/-?[\d.]+/g)!.map(Number);
+    for (let i = 0; i < nums.length; i += 2) {
+      xs.push(nums[i]!);
+      ys.push(nums[i + 1]!);
+    }
+  }
+  const [minX, minY, width, height] = svg.getAttribute("viewBox")!.split(/\s+/).map(Number);
+  // A square viewBox starting at the origin, drawn at its own size: one user
+  // unit is one CSS pixel, so these numbers are the pixels the browser paints.
+  expect([minX, minY]).toEqual([0, 0]);
+  expect(width).toBe(height);
+  expect(svg.getAttribute("width")).toBe(String(width));
+  expect(svg.getAttribute("height")).toBe(String(height));
+  return {
+    x: [Math.min(...xs) - half, Math.max(...xs) + half],
+    y: [Math.min(...ys) - half, Math.max(...ys) + half],
+    box: width!,
+  };
+}
+
+/** The mark is symmetric about its own box on both axes — to the arithmetic. */
+function expectMarkCentred(svg: SVGSVGElement): void {
+  const ink = inkOf(svg);
+  expect((ink.x[0] + ink.x[1]) / 2).toBeCloseTo(ink.box / 2, 6);
+  expect((ink.y[0] + ink.y[1]) / 2).toBeCloseTo(ink.box / 2, 6);
+  // …and it fills the box rather than rattling around inside it.
+  expect(ink.x[1] - ink.x[0]).toBeGreaterThan(ink.box * 0.5);
+}
+
+/**
  * The chip is a fixed 44px circle carrying one glyph, and U+271B's own metrics
  * are asymmetric — a `<button>`'s default alignment therefore lands it visibly
  * off-centre. The fix has to be LAYOUT (a flex box centring its own content),
@@ -1593,6 +1648,168 @@ describe("the chip centres its glyph by layout", () => {
     // No stray text nodes in either: a space would be a glyph off-centre.
     expect(open.querySelector(`[${NS}-grip]`)!.textContent).toBe("");
     expect(open.querySelector(`[${NS}-min]`)!.textContent).toBe("");
+  });
+});
+
+/**
+ * The same defect, found twice: a glyph in a fixed-size box centred by a
+ * `font:.../<px>` line-height. That lands only when the glyph's own ink is
+ * symmetric about the baseline — U+271B's is not (the chip), and U+00D7's is
+ * not either (the delete button, which rendered its cross high AND, because a
+ * host page's `button{padding}` cascaded straight into it, in a 28x22 oval
+ * rather than the 22px disc its CSS claimed).
+ *
+ * So the mechanism is the assertion here: a flex box centring its own content,
+ * a box that is the size it says it is, and — for anything that is an icon
+ * rather than the product's own mark — a path the picker draws itself, whose
+ * ink is symmetric by construction instead of by luck of the font stack. The
+ * e2e suite measures the result in a real browser; this is the mechanism that
+ * makes the measurement come out right.
+ */
+describe("every mark is centred by layout, never by line-height", () => {
+  /** The whole point: the pattern must not exist anywhere in the sheet. */
+  it("centres nothing anywhere with a pixel line-height", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const sheet = document.head
+      .querySelector(`style[${NS}]`)!
+      .textContent!.replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // `font:600 13px/22px system-ui` in a 22px box is the bug, twice over. A
+    // ratio line-height (`14px/1.4`) is ordinary running text and stays.
+    expect(sheet).not.toMatch(/font:[^;}]*\/\s*\d+(\.\d+)?px/);
+    expect(sheet).toMatch(/font:\d+px\/1\.4/); // …the running text is still there
+  });
+
+  it("gives the delete button a drawn cross in a disc a host page cannot deform", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport, accent: ACCENT });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note to delete");
+    picker.disable();
+    transport.listed.push(transport.created[0]!); // the inbox has it now
+
+    const del = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-del]`)!;
+    expect(del).not.toBeNull();
+
+    const rule = ruleFor(`[${NS}-del]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    // The disc is the size it claims regardless of the page's own button CSS:
+    // border-box plus no padding of its own is what makes 22px mean 22px.
+    expect(rule).toContain("box-sizing:border-box");
+    expect(rule).toContain("padding:0");
+    // The hit area never shrank: pinning the box down removes the width a host
+    // page's button padding was accidentally adding, so the declared size goes
+    // up to cover it — and 24px is WCAG 2.2's floor for a target like this.
+    expect(rule).toContain("width:24px");
+    expect(rule).toContain("height:24px");
+    expect(rule).not.toMatch(/width:(?!24px)|height:(?!24px)/);
+    // Nothing tuned against one font stack, and no line-height doing the work.
+    expect(rule).not.toMatch(/font:|line-height|text-indent|transform|vertical-align/);
+
+    // Not U+00D7 any more, and not any other character: a drawn mark.
+    expect(del.textContent).toBe("");
+    expect(del.getAttribute("aria-label")).toBe("Delete note");
+    const mark = del.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+  });
+
+  it("makes the Pick button a row that centres its mark against its label", async () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const pick = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-pick]`)!;
+
+    const rule = ruleFor(`[${NS}-pick]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    expect(rule).toContain("box-sizing:border-box");
+    // A gap, not a space character: the space between a glyph and its label
+    // was whatever the font said it was.
+    expect(rule).toMatch(/gap:\d+px/);
+
+    // The mark is an element beside the label, not a character in front of it
+    // — so a screen reader is not asked to pronounce it.
+    const mark = pick.querySelector("svg")!;
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(pick.textContent).toBe("Pick an element");
+    expect(pick.textContent).not.toContain("✛");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+  });
+
+  it("draws the minimize chevron symmetric about its own box", async () => {
+    make({ transport: fakeTransport() });
+    const min = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-min]`)!;
+
+    expect(ruleFor(`[${NS}-min]`)).toContain("box-sizing:border-box");
+    const mark = min.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    // The chevron's points are 5.25 and 8.75, not 5.5 and 9: the round cap
+    // grows the ink 0.9 at each end, and the old pair put the result 0.25
+    // below the centre of the box drawing it.
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+
+    // Minimizing still flips the same mark rather than swapping in a second.
+    expect(ruleFor(`[${NS}-panel][${NS}-minimized] [${NS}-min] svg`)).toContain(
+      "transform:rotate(180deg)",
+    );
+  });
+
+  it("puts every drawn mark on its own baseline-free block", () => {
+    make({ transport: fakeTransport() });
+    const rule = ruleFor(`[${NS}-mark]`);
+    // An inline SVG sits on the text baseline — the one thing a flex box
+    // centring its own content must not be handed.
+    expect(rule).toContain("display:block");
+    // …and in the Pick button's row it must not be squeezed by the label.
+    expect(rule).toContain("flex:none");
+  });
+
+  it("centres the badge's count in a disc that is actually round", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const rule = ruleFor(`[${NS}-badge]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    expect(rule).toContain("line-height:1");
+    // `min-width:19px` next to `padding:0 4px` under content-box was measuring
+    // the padding on top of the floor — a one-digit count came out 27x19.
+    expect(rule).toContain("box-sizing:border-box");
+    expect(rule).toContain("min-width:19px");
+    expect(rule).toContain("height:19px");
+    // The padding stays: it is what a three-digit count grows by.
+    expect(rule).toContain("padding:04px");
+    // The count is still a count, and still out of the chip's flex flow.
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    expect(rule).toContain("position:absolute");
+  });
+
+  it("draws every mark with no dependency, no icon font and no emoji", async () => {
+    make({ transport: fakeTransport() });
+    const open = await openPanel();
+    const marks = [...open.querySelectorAll<SVGSVGElement>(`svg[${NS}-mark]`)];
+    // The Pick button and the minimize chevron, at least.
+    expect(marks.length).toBeGreaterThanOrEqual(2);
+    for (const mark of marks) {
+      expectMarkCentred(mark);
+      // `currentColor` throughout: a mark inherits the state its control is in
+      // (the delete button inverts on hover) rather than restating a colour.
+      for (const path of mark.querySelectorAll("path")) {
+        expect(path.getAttribute("stroke")).toBe("currentColor");
+      }
+      // Drawn in the document's own namespace, from nothing but path data.
+      expect(mark.namespaceURI).toBe("http://www.w3.org/2000/svg");
+      expect(mark.querySelectorAll("image, use, foreignObject, text")).toHaveLength(0);
+    }
   });
 });
 
