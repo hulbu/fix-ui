@@ -204,6 +204,25 @@ async function openPanel(): Promise<HTMLElement> {
   return query(`[${NS}-panel]`)!;
 }
 
+/**
+ * The declarations of the rule whose selector list is EXACTLY `selector`.
+ *
+ * Layout assertions belong here rather than on a measured offset: jsdom lays
+ * nothing out, and a pixel expectation would only re-state whatever font the
+ * runner happened to have. What is actually being claimed is that the box
+ * centres its own content — which is a property of these declarations.
+ */
+function ruleFor(selector: string, root: ParentNode = document.head): string {
+  // Comments carry the reasoning for most of these rules, and a comment sits
+  // between the previous `}` and the selector it explains.
+  const sheet = root.querySelector(`style[${NS}]`)!.textContent!.replace(/\/\*[\s\S]*?\*\//g, "");
+  const match = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+    ([, selectors]) => selectors!.trim().replace(/\s+/g, " ") === selector,
+  );
+  if (!match) throw new Error(`no rule for ${selector}`);
+  return match[2]!.replace(/\s+/g, "");
+}
+
 /** Toasts stack — the newest one is the reply to what just happened. */
 function lastToast(): string {
   const all = document.querySelectorAll(`[${NS}-toast]`);
@@ -1477,5 +1496,78 @@ describe("the crosshair while armed", () => {
     picker.destroy();
     live.pop();
     expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+  });
+});
+
+/**
+ * The chip is a fixed 44px circle carrying one glyph, and U+271B's own metrics
+ * are asymmetric — a `<button>`'s default alignment therefore lands it visibly
+ * off-centre. The fix has to be LAYOUT (a flex box centring its own content),
+ * not a padding nudge or a magic offset: those are tuned against one font
+ * stack and break on the next one, and a host page can change the font stack
+ * under us at any time.
+ */
+describe("the chip centres its glyph by layout", () => {
+  it("makes the chip a flex box that centres on both axes, with nothing nudged", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+
+    const chip = ruleFor(`[${NS}-chip]`);
+    expect(chip).toContain("display:flex");
+    expect(chip).toContain("align-items:center");
+    expect(chip).toContain("justify-content:center");
+
+    // Not a fudge factor: nothing here shifts the glyph on one axis only,
+    // which is exactly what would drift on a different font stack.
+    for (const nudge of ["text-indent", "padding-left", "padding-top", "transform"]) {
+      expect(chip).not.toContain(nudge);
+    }
+
+    // …and the glyph's own line box is exactly its content, so the flex box
+    // has a symmetric thing to centre in the first place.
+    const glyph = ruleFor(`[${NS}-glyph]`);
+    expect(glyph).toContain("line-height:1");
+    expect(glyph).not.toMatch(/margin|position|top:|left:|transform/);
+  });
+
+  it("leaves the badge out of the flex flow entirely", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    // Absolutely positioned children are not flex items: the chip becoming a
+    // flex container cannot move the count, and its offsets stay what they were.
+    const badge = ruleFor(`[${NS}-badge]`);
+    expect(badge).toContain("position:absolute");
+    expect(badge).toContain("top:-5px");
+    expect(badge).toContain("right:-5px");
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    // And it is still the chip's own child, beside the glyph rather than in it.
+    const chip = query(`[${NS}-chip]`)!;
+    expect(query(`[${NS}-badge]`)!.parentElement).toBe(chip);
+    expect(query(`[${NS}-glyph]`)!.contains(query(`[${NS}-badge]`))).toBe(false);
+  });
+
+  /** The same question, asked of the other two marks the picker draws. */
+  it("centres the panel's minimize chevron and its grip by layout too", async () => {
+    make({ transport: fakeTransport() });
+    const open = await openPanel();
+
+    const minimize = ruleFor(`[${NS}-min]`);
+    expect(minimize).toContain("display:flex");
+    expect(minimize).toContain("align-items:center");
+    expect(minimize).toContain("justify-content:center");
+
+    // The grip is a background image on a fixed box — symmetric by
+    // construction — and the header centres it vertically for the same reason
+    // the chip centres its glyph.
+    expect(ruleFor(`[${NS}-grip]`)).toContain("flex:none");
+    expect(ruleFor(`[${NS}-head]`)).toContain("align-items:center");
+
+    // No stray text nodes in either: a space would be a glyph off-centre.
+    expect(open.querySelector(`[${NS}-grip]`)!.textContent).toBe("");
+    expect(open.querySelector(`[${NS}-min]`)!.textContent).toBe("");
   });
 });

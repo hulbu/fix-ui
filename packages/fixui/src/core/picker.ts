@@ -314,8 +314,15 @@ export function createPicker(opts: PickerOptions): Picker {
       left:50%;bottom:24px;
       transform:translateX(-50%);background:#1c1c1c;color:#fff;
       padding:8px 16px;border-radius:999px;font:600 13px system-ui,sans-serif;}
+    /* A flex box centring its own content, on both axes. U+271B's metrics are
+       asymmetric, so a button's default text alignment lands it visibly off
+       centre — and the alternative (a padding nudge, a magic offset) is tuned
+       against exactly one font stack and drifts on the next one. The zero
+       padding is part of the same claim: a UA button padding would eat into
+       the fixed 44px box. */
     [${NS}-chip]{position:fixed;inset:auto;margin:0;overflow:visible;
       box-sizing:border-box;z-index:2147483601;right:16px;bottom:16px;
+      display:flex;align-items:center;justify-content:center;padding:0;
       width:${CHIP_SIZE}px;height:${CHIP_SIZE}px;border-radius:999px;cursor:pointer;
       touch-action:none;user-select:none;-webkit-user-select:none;
       border:2px solid ${CHIP_BORDER};
@@ -323,7 +330,9 @@ export function createPicker(opts: PickerOptions): Picker {
       box-shadow:${CHIP_SHADOW};}
     [${NS}-chip][${NS}-dragging]{cursor:grabbing;}
     [${NS}-chip][${NS}-static]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
-    [${NS}-glyph]{display:inline-block;}
+    /* A line-height of 1 so the line box is the glyph and nothing else — the
+       half-leading is what the flex box would otherwise be centring. */
+    [${NS}-glyph]{display:block;line-height:1;}
     [${NS}-chip][${NS}-pulse] [${NS}-glyph]{
       animation:${NS}-glyph-pulse 1.8s ease-in-out infinite;}
     [${NS}-badge]{position:absolute;top:-5px;right:-5px;min-width:19px;height:19px;
