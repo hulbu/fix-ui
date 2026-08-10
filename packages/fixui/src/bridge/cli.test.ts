@@ -14,7 +14,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:net";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,8 +51,21 @@ afterEach(async () => {
   for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
+/**
+ * A project directory named the way the processes under test will name it.
+ *
+ * `realpath` is not decoration. A project is routed by its path *string*
+ * (storage.ts `resolveProject` resolves but never canonicalises), and a spawned
+ * child's `process.cwd()` comes back canonicalised by the kernel. On macOS
+ * `tmpdir()` is `/var/folders/…`, where `/var` is a symlink to `/private/var`,
+ * so a test that hands a page the raw `mkdtemp` path files that page under a
+ * project name no spawned bridge here will ever use — the page and the agent
+ * end up on two different projects that happen to be the same directory. On
+ * Linux `/tmp` is real and the two agree, which is exactly the kind of
+ * difference that makes a suite pass on one CI runner and hang on another.
+ */
 async function tempProject(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "fixui-cli-"));
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "fixui-cli-")));
   tempDirs.push(dir);
   return dir;
 }
@@ -143,6 +156,56 @@ function call(client: Client, name: string, args: Record<string, unknown> = {}):
   return client.callTool({ name, arguments: args }) as Promise<ToolResult>;
 }
 
+interface Frame {
+  event: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * The page's half of the review channel, parsed as it arrives.
+ *
+ * The body is *consumed*, not merely opened: that is what an adapter does, and
+ * a response nobody reads holds its connection checked out for as long as the
+ * test runs. Frames land in an array the assertions poll with `waitFor`.
+ */
+function readEvents(response: Response): Frame[] {
+  const frames: Frame[] = [];
+  void (async () => {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+        buffer += decoder.decode(chunk, { stream: true });
+        for (let end = buffer.indexOf("\n\n"); end !== -1; end = buffer.indexOf("\n\n")) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const event = /^event: (.+)$/m.exec(frame)?.[1];
+          const data = /^data: (.+)$/m.exec(frame)?.[1];
+          // Comment lines (`: connected`, `: heartbeat`) carry neither.
+          if (event !== undefined && data !== undefined) {
+            frames.push({ event, data: JSON.parse(data) as Record<string, unknown> });
+          }
+        }
+      }
+    } catch {
+      // The test aborts this stream in its `finally`; a torn read is the end of
+      // the subscription, not a failure to report.
+    }
+  })();
+  return frames;
+}
+
+/** The human's answer, posted the way the adapter posts it. */
+async function submitVerdict(port: number, token: string, reviewId: string): Promise<number> {
+  const response = await fetch(`http://127.0.0.1:${port}/reviews/${reviewId}/verdict`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-fixui-token": token },
+    body: JSON.stringify({ verdict: "approved", entryIds: [] }),
+  });
+  await response.arrayBuffer(); // read it: an unread body keeps its socket
+  return response.status;
+}
+
 /** A port that was bound and released: nothing answers there now. */
 async function deadPort(): Promise<number> {
   const server = createServer();
@@ -169,6 +232,7 @@ it("an agent-spawned bridge proxies to the port named in a live discovery file",
     signal: watcher.signal,
   });
   expect(stream.status).toBe(200);
+  const events = readEvents(stream);
 
   try {
     // No --port, no FIXUI_TOKEN: everything it needs is in `.fix-ui.json`.
@@ -184,9 +248,22 @@ it("an agent-spawned bridge proxies to the port named in a live discovery file",
     expect(surfaces).toHaveLength(1);
     expect(surfaces[0]).toMatchObject({ project, label: "the dev server's window" });
 
-    // And the held call travels to the owner's broker, which answers it.
-    const review = await call(client, "request_review", { prompt: "anyone there?" });
-    expect(JSON.parse(review.content[0]!.text)).toMatchObject({ verdict: "no-reviewer" });
+    // And the held call travels to the owner's broker, which raises it on the
+    // page above — the whole round trip, proxy to broker to page and back.
+    // Not awaited yet: the broker holds it open until the human answers, which
+    // is the next two lines.
+    const review = call(client, "request_review", { prompt: "anyone there?" });
+    // Handled here as well as at the `await` below, so that a failure *before*
+    // that await reports itself rather than an unhandled rejection.
+    void review.catch(() => undefined);
+    const requested = await waitFor(
+      () => events.find((frame) => frame.event === "review-requested")?.data,
+      "the page to be asked for a review",
+    );
+    expect(await submitVerdict(discovery.port, discovery.token, String(requested.reviewId))).toBe(
+      200,
+    );
+    expect(JSON.parse((await review).content[0]!.text)).toMatchObject({ verdict: "approved" });
 
     await waitFor(() => (/proxy/.test(stderr()) ? true : undefined), "the proxy to say so");
     expect(stderr()).toContain(String(discovery.port));
