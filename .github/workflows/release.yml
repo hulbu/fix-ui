@@ -41,6 +41,12 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Node 22 bundles npm 10.x, which has no idea trusted publishing exists —
+      # it skips the OIDC exchange entirely and fails with ENEEDAUTH, as if no
+      # credentials were configured. OIDC landed in npm 11.5.1.
+      - run: npm install -g npm@latest
+      - run: npm --version
+
       - run: pnpm install --frozen-lockfile
 
       # Nothing is published unless the whole gate is green. This is the reason
