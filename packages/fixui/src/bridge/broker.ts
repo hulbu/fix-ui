@@ -28,7 +28,7 @@ export const DEFAULT_TIMEOUT_SECONDS = 600;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
- * Which banner the page draws, and therefore which answer comes back
+ * Which question the page asks, and therefore which answer comes back
  * (docs/agent-integration.md "Sessions").
  *
  * `review` asks a yes-or-no question about a change the agent just made.
@@ -101,7 +101,7 @@ export interface ReviewRequest {
    * Aborts when the agent that asked for the review is gone (its HTTP call
    * dropped, its harness restarted). The review ends there: nothing would ever
    * read its outcome, and leaving it pending would wedge the project as `busy`
-   * — and leave the page's banner up — for the rest of the timeout.
+   * — and leave the page still asking — for the rest of the timeout.
    */
   signal?: AbortSignal;
 }
@@ -252,7 +252,7 @@ export function createReviewBroker(): ReviewBroker {
   }
 
   /**
-   * End a review no human verdict will ever reach, and stand the page's banner
+   * End a review no human verdict will ever reach, and take the request off
    * down — it has no other way to learn (docs/agent-integration.md:
    * `review-cancelled` is "timeout or agent abort"). Identity, not id, is the
    * guard: a review that already resolved is not this object any more, so a
@@ -262,7 +262,7 @@ export function createReviewBroker(): ReviewBroker {
     if (pending.get(review.project) !== review) return false;
     pending.delete(review.project);
     clearTimeout(review.timer);
-    // Stood down where it was raised — a targeted review's banner is only up on
+    // Stood down where it was raised — a targeted review is only showing on
     // the surface it named.
     announce(review, "review-cancelled", { reviewId: review.id });
     return true;

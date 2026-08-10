@@ -3,9 +3,9 @@ import { buildEntry, type ConsoleError, type FeedbackEntry } from "./entry.js";
 import type { Transport } from "./transport.js";
 
 /**
- * The picker: highlight box, note popover, saved-notes panel, chip, review
- * banner — plus the four picking mechanics the prototype paid for
- * (docs/design.md "Picking mechanics"):
+ * The picker: highlight box, note popover, saved-notes panel (which is also
+ * where an agent's session or review lives), chip — plus the four picking
+ * mechanics the prototype paid for (docs/design.md "Picking mechanics"):
  *
  *   1. modal dialogs beat z-index — top-layer popovers for the paint order,
  *   2. …but only a dialog's own subtree is interactive, so the UI RE-HOMES
@@ -20,7 +20,7 @@ import type { Transport } from "./transport.js";
  */
 
 const NS = "data-uifb";
-const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel],[${NS}-banner]`;
+const OWN_UI = `[${NS}-pop],[${NS}-chip],[${NS}-box],[${NS}-toast],[${NS}-panel]`;
 /** On `<html>` exactly while picking is armed — the crosshair's only switch. */
 const ARMED = `${NS}-armed`;
 /** Cancelled for non-picker targets while armed — see mechanic 4. */
@@ -121,7 +121,7 @@ function whileArmed(selectors: string): string {
  */
 const CURSOR_CSS = ((): string => {
   /** The chip is a BUTTON first (a click toggles picking) and a draggable second. */
-  const buttons = `[${NS}-chip],[${NS}-panel] button,[${NS}-pop] button,[${NS}-banner] button`;
+  const buttons = `[${NS}-chip],[${NS}-panel] button,[${NS}-pop] button`;
   /** Mid-gesture, on either draggable. */
   const grabbing = `[${NS}-chip][${NS}-dragging],[${NS}-panel][${NS}-dragging] [${NS}-drag]`;
   return `
@@ -153,14 +153,14 @@ export interface PickerOptions {
 }
 
 /**
- * Which of the two agent-initiated flows the banner is hosting.
+ * Which of the two agent-initiated flows the notes panel is hosting.
  *
  * `review` is the original: the agent changed something and wants a yes or a
- * no, so the banner offers Approve / Request changes. `session` is the batched
+ * no, so the panel offers Approve / Request changes. `session` is the batched
  * one (docs/agent-integration.md "Sessions"): the agent is standing by, the
  * user points at as many things as they like, and ONE button — Submit — hands
  * the whole batch over. Same channel, same held call, same timeout; only the
- * banner and the verdict differ.
+ * buttons and the verdict differ.
  */
 export type ReviewMode = "review" | "session";
 
@@ -187,9 +187,10 @@ export interface Picker {
   toggle(): void;
   destroy(): void;
   readonly active: boolean;
-  /** Banner up, picker armed, entry ids tracked — the agent-initiated flow. */
+  /** Panel open on the prompt, picker armed, entry ids tracked — the
+   *  agent-initiated flow. */
   startReview(req: ReviewRequest): void;
-  /** Banner down without a verdict (the `review-cancelled` path). */
+  /** The request leaves the panel without a verdict (`review-cancelled`). */
   endReview(): void;
   onVerdict(cb: (v: ReviewVerdict) => void): () => void;
   /**
@@ -284,6 +285,8 @@ export function createPicker(opts: PickerOptions): Picker {
     entryIds: string[];
     armed: boolean;
     mode: ReviewMode;
+    /** The agent's own words, kept so every repaint of the panel restates them. */
+    prompt: string;
   } | null = null;
   const verdictListeners = new Set<(v: ReviewVerdict) => void>();
   const toasts = new Set<HTMLElement>();
@@ -360,6 +363,25 @@ export function createPicker(opts: PickerOptions): Picker {
       background:transparent;color:#94a3b8;}
     [${NS}-min]:hover{background:#00000010;color:#1c1c1c;}
     [${NS}-panel][${NS}-minimized] [${NS}-min] svg{transform:rotate(180deg);}
+    /* "A session is live", in the one place that survives being minimized: the
+       header bar. A solid accent dot — visible on its own, with the chip's own
+       pulse borrowed on top for anyone who is looking at the panel rather than
+       at the chip. Reduced motion stills it below; the dot stays. */
+    [${NS}-live]{flex:none;width:8px;height:8px;border-radius:999px;
+      background:${accent};box-shadow:0 0 0 3px ${accent}33;
+      animation:${NS}-glyph-pulse 1.8s ease-in-out infinite;}
+    /* The agent's own words. A tinted block rather than a bar across the top of
+       the app: it is the panel's subject line, and the notes below it are what
+       the buttons at the bottom act on. */
+    [${NS}-agent]{margin:0 0 10px;padding:8px 10px;border-radius:10px;
+      background:${accent}14;border:1px solid ${accent}55;color:#1c1c1c;}
+    /* Separated from the list, because that is what they act on. */
+    [${NS}-actions]{display:flex;gap:6px;margin-top:10px;padding-top:10px;
+      border-top:1px solid #00000014;}
+    [${NS}-actions] button{flex:1;border:0;cursor:pointer;border-radius:999px;
+      padding:8px 12px;font:600 13px system-ui,sans-serif;}
+    [${NS}-approve],[${NS}-submit]{background:${accent};color:#fff;}
+    [${NS}-changes]{background:#00000010;color:#1c1c1c;}
     [${NS}-row]{display:flex;align-items:flex-start;gap:8px;padding:8px;
       border:1px solid #00000014;border-radius:10px;margin-bottom:6px;}
     [${NS}-row] p{margin:0;flex:1;}
@@ -373,23 +395,14 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-pick]{width:100%;border:0;cursor:pointer;border-radius:999px;
       padding:8px 14px;background:${accent};color:#fff;
       font:600 13px system-ui,sans-serif;margin-top:2px;}
+    /* While an agent is waiting, the panel has exactly one primary action and
+       it is the one that answers them. Picking is still available — the human
+       may have pressed Escape — but two full-width accent buttons stacked on
+       each other is two things claiming to be the point. */
+    [${NS}-panel][${NS}-req] [${NS}-pick]{background:#00000010;color:#1c1c1c;}
     [${NS}-hint]{margin:10px 0 0;text-align:center;color:#00000088;}
     [${NS}-hint] code{background:#00000010;border-radius:6px;padding:1px 6px;
       font:600 12px ui-monospace,monospace;}
-    [${NS}-banner]{position:fixed;inset:auto;margin:0;z-index:2147483601;
-      left:50%;top:16px;transform:translateX(-50%);
-      display:flex;align-items:center;gap:10px;
-      max-width:min(660px,calc(100vw - 32px));
-      background:#1c1c1c;color:#fff;border:1px solid ${accent};
-      border-radius:14px;padding:10px 12px;box-shadow:0 16px 48px -12px #00000066;
-      font:13px/1.4 system-ui,sans-serif;}
-    [${NS}-banner] p{margin:0;flex:1;}
-    [${NS}-banner] p b{display:block;font:700 11px/1.6 ui-monospace,monospace;
-      color:${accent};text-transform:uppercase;letter-spacing:.04em;}
-    [${NS}-banner] button{border:0;cursor:pointer;border-radius:999px;
-      padding:6px 12px;font:600 12px system-ui,sans-serif;white-space:nowrap;}
-    [${NS}-approve],[${NS}-submit]{background:${accent};color:#fff;}
-    [${NS}-changes]{background:#ffffff26;color:#fff;}
     /* "Armed" as motion, since neither the colour nor the chip's own geometry
        moves — the circle is static in every state. Only the GLYPH inside it
        pulses, and only in opacity: subtle, slow, and shallow on purpose, since
@@ -407,6 +420,8 @@ export function createPicker(opts: PickerOptions): Picker {
     @media (prefers-reduced-motion: reduce){
       [${NS}-chip][${NS}-pulse]{box-shadow:${CHIP_SHADOW},0 0 0 3px ${accent};}
       [${NS}-chip][${NS}-pulse] [${NS}-glyph]{animation:none;}
+      /* The dot is a solid mark in its own right — stilling it costs nothing. */
+      [${NS}-live]{animation:none;}
     }
 ${CURSOR_CSS}  `;
 
@@ -487,7 +502,7 @@ ${CURSOR_CSS}  `;
     const next = topModal() ?? mount;
     if (next === home) return;
     home = next;
-    for (const el of [box, chip, panel, pop, banner]) place(el);
+    for (const el of [box, chip, panel, pop]) place(el);
     // box visibility is inline display — restate it after the move
     if (!active) box.style.display = "none";
     // …and so are the dragged positions, which a re-home must not lose.
@@ -518,7 +533,6 @@ ${CURSOR_CSS}  `;
   let pop: HTMLDivElement | null = null;
   let chip: HTMLButtonElement | null = null;
   let panel: HTMLDivElement | null = null;
-  let banner: HTMLDivElement | null = null;
 
   if (showChip) {
     chip = document.createElement("button");
@@ -876,6 +890,9 @@ ${CURSOR_CSS}  `;
     if (!panel) return;
     panel.textContent = "";
     panel.toggleAttribute(`${NS}-minimized`, minimized);
+    // "An agent is waiting on this panel" — what the quieter Pick button hangs
+    // off, and true whether or not the panel is folded away.
+    panel.toggleAttribute(`${NS}-req`, review !== null);
 
     // The whole header is the drag handle — rows and their buttons stay rows
     // and buttons, so deleting a note can never turn into a drag. A re-render
@@ -894,8 +911,17 @@ ${CURSOR_CSS}  `;
     grip.setAttribute(`${NS}-grip`, "");
     grip.setAttribute("aria-hidden", "true");
 
+    // While an agent is waiting, the header says so — because the header is
+    // ALL that is left when the panel is minimized, and a live session hidden
+    // behind a collapse is the failure this whole merge exists to avoid.
     const title = document.createElement("h4");
-    title.textContent = entries.length > 0 ? `Saved notes (${entries.length})` : "UI notes";
+    title.textContent = review
+      ? review.mode === "session"
+        ? "Session running"
+        : "Review requested"
+      : entries.length > 0
+        ? `Saved notes (${entries.length})`
+        : "UI notes";
 
     // Not an X. Closing is the scarier promise ("is my note gone?"); what the
     // user wants when the panel covers the thing they are reviewing is to put
@@ -912,10 +938,28 @@ ${CURSOR_CSS}  `;
       panelDrag.apply(); // a header-height panel must not fall off the clamp
     });
 
-    head.append(grip, title, minimize);
+    head.append(grip);
+    // The second half of "still obviously live": a mark, for the glance that
+    // does not read the title. Decorative — the title already says it in words.
+    if (review) {
+      const live = document.createElement("span");
+      live.setAttribute(`${NS}-live`, "");
+      live.setAttribute("aria-hidden", "true");
+      head.append(live);
+    }
+    head.append(title, minimize);
     panel.append(head);
     // Minimized IS the header bar — and it stays wherever it was dragged to.
     if (minimized) return;
+
+    // The agent's prompt, at the top of the panel: what it is standing by for.
+    if (review) {
+      const agent = document.createElement("p");
+      agent.setAttribute(`${NS}-agent`, "");
+      // textContent, never innerHTML: the prompt is somebody else's text.
+      agent.textContent = review.prompt;
+      panel.append(agent);
+    }
 
     if (entries.length === 0) {
       const empty = document.createElement("p");
@@ -947,18 +991,41 @@ ${CURSOR_CSS}  `;
     pick.setAttribute(`${NS}-pick`, "");
     pick.textContent = "✛ Pick an element";
     pick.addEventListener("click", () => {
-      closePanel();
+      // Normally the panel gets out of the way of the thing being picked. Not
+      // during a session: the prompt and the button that ends it live in here,
+      // and closing the panel would take the agent's question off the screen.
+      if (!review) closePanel();
       enable();
     });
     panel.append(pick);
 
-    if (entries.length > 0) {
+    if (entries.length > 0 && !review) {
       const hint = document.createElement("p");
       hint.setAttribute(`${NS}-hint`, "");
       const code = document.createElement("code");
       code.textContent = "fix ui";
       hint.append("Done? Ask your agent to ", code, " and fix these.");
       panel.append(hint);
+    }
+
+    // Last, and deliberately so: they act on the notes listed above them, and
+    // that is exactly what the reading order should say. (The hint above is
+    // suppressed while one is up — "ask your agent to fix ui" is the wrong
+    // advice when an agent is already holding a call open on this very list.)
+    if (review) {
+      const actions = document.createElement("div");
+      actions.setAttribute(`${NS}-actions`, "");
+      // A session is not a yes-or-no question, so it does not ask one: the user
+      // leaves as many notes as they like and hands the batch over with Submit.
+      actions.append(
+        ...(review.mode === "session"
+          ? [verdictButton("submit", "Submit", "submitted")]
+          : [
+              verdictButton("approve", "Approve", "approved"),
+              verdictButton("changes", "Request changes", "changes"),
+            ]),
+      );
+      panel.append(actions);
     }
   }
 
@@ -1188,9 +1255,12 @@ ${CURSOR_CSS}  `;
   // --- Review (agent → human, docs/agent-integration.md Direction 2) -------
 
   /**
-   * One banner button. Every one of them ends a held agent call, which is a
-   * decision that has to be a human's — hence `isHuman` on all three (see the
-   * note on that function): Submit is exactly as much of a decision as Approve.
+   * One of the panel's action buttons. Every one of them ends a held agent
+   * call, which is a decision that has to be a human's — hence `isHuman` on all
+   * three (see the note on that function): Submit is exactly as much of a
+   * decision as Approve. It matters more, not less, now that these buttons live
+   * in the panel: the panel re-homes into the page's own modal dialog, which
+   * puts them in light DOM that page script can find and `.click()`.
    */
   function verdictButton(
     attribute: string,
@@ -1208,36 +1278,17 @@ ${CURSOR_CSS}  `;
     return button;
   }
 
-  function showBanner(prompt: string, mode: ReviewMode): void {
-    closeBanner();
-    banner = document.createElement("div");
-    banner.setAttribute(`${NS}-banner`, "");
-
-    const text = document.createElement("p");
-    const title = document.createElement("b");
-    title.textContent = mode === "session" ? "Session running" : "Review requested";
-    // textContent, never innerHTML: the prompt is somebody else's text.
-    text.append(title, prompt);
-
-    // A session is not a yes-or-no question, so it does not ask one: the user
-    // leaves as many notes as they like and hands the batch over with Submit.
-    const buttons =
-      mode === "session"
-        ? [verdictButton("submit", "Submit", "submitted")]
-        : [
-            verdictButton("approve", "Approve", "approved"),
-            verdictButton("changes", "Request changes", "changes"),
-          ];
-
-    banner.append(text, ...buttons);
-    place(banner);
-  }
-
-  function closeBanner(): void {
-    banner?.remove();
-    banner = null;
-  }
-
+  /**
+   * The agent's request opens the notes panel and lives in it.
+   *
+   * It used to be a third floating element — a 660px bar across the top of
+   * somebody's app, beside the chip and beside the panel whose list it was
+   * asking about. One surface is the honest shape: the prompt is the panel's
+   * subject line, the notes are the panel's list, and the buttons at the bottom
+   * hand that list over. Everything the panel already does — dragging,
+   * minimizing, re-homing into an open modal, repainting in place without
+   * losing the scroll — now applies to the review for free.
+   */
   function startReview(req: ReviewRequest): void {
     // The bridge replays `review-requested` to every new subscriber, so a
     // dropped stream (an SSE reconnect, the extension's worker reviving) calls
@@ -1253,16 +1304,27 @@ ${CURSOR_CSS}  `;
       armed: !active,
       // A bridge that never mentions a mode is asking for the original review.
       mode: req.mode ?? "review",
+      prompt: req.prompt,
     };
-    showBanner(req.prompt, review.mode); // replaces any banner already up
+    // A resume may restate the prompt; the ids it has already collected stay.
+    review.prompt = req.prompt;
+    // A NEW request has to be readable the moment it arrives — a panel the user
+    // folded away an hour ago would otherwise hide the question. A RESUME is
+    // left alone: if it is minimized, the human minimized it during this very
+    // session, on purpose, and the header still says the session is live.
+    if (!resumed) minimized = false;
     enable(); // the plugin activates itself — the human never hunts for the chip
+    // …and the panel comes up with it, carrying the prompt and the buttons.
+    if (panel) renderPanel();
+    else openPanel();
   }
 
   function endReview(): void {
     const current = review;
     review = null;
-    closeBanner();
     if (current?.armed) disable();
+    // The prompt and its buttons go; the notes, and the panel, stay.
+    renderPanel();
   }
 
   function emitVerdict(verdict: ReviewVerdict["verdict"]): void {
@@ -1287,7 +1349,9 @@ ${CURSOR_CSS}  `;
   // --- Arming (mechanic 3: window + capture) -------------------------------
   function enable(): void {
     if (active) return;
-    closePanel();
+    // The panel is normally in the way of the thing being picked — except when
+    // it is hosting the agent's request, which is the reason picking started.
+    if (!review) closePanel();
     active = true;
     // window + capture runs before any page listener on document (a page's
     // own capture-phase handler — a modal opener, say — would otherwise win
@@ -1340,9 +1404,10 @@ ${CURSOR_CSS}  `;
     // Belt and braces: `disable()` is a no-op when the picker was never armed,
     // and destroy() must leave nothing of ours on the document either way.
     document.documentElement.removeAttribute(ARMED);
-    closePanel(); // also ends the panel drag and drops its window listeners
+    // Also ends the panel drag and drops its window listeners — and takes the
+    // agent's request with it, since the panel is where that lives now.
+    closePanel();
     chipDrag.stop(); // …and the chip's, if the page went away mid-gesture
-    closeBanner();
     review = null;
     verdictListeners.clear();
     dialogWatcher.disconnect();

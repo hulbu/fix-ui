@@ -1,7 +1,8 @@
 import {
+  AGENT,
   APPROVE,
-  BANNER,
   CHANGES,
+  PANEL,
   expect,
   fixtureUrl,
   openFixture,
@@ -25,9 +26,11 @@ test("request changes with a note: the held call answers with the entry", async 
 
   const review = requestReview(bridge, { prompt: "Check the hero section" });
 
-  // The plugin activates itself — banner up, picker armed, no chip hunting.
-  const banner = page.locator(BANNER);
-  await expect(banner).toContainText("Check the hero section");
+  // The plugin activates itself — the notes panel opens carrying the prompt,
+  // the picker arms, and nobody goes hunting for the chip.
+  const prompt = page.locator(AGENT);
+  await expect(prompt).toContainText("Check the hero section");
+  await expect(page.locator(PANEL)).toHaveCount(1);
   expect(review.settled()).toBe(false);
   expect(await page.evaluate(() => window.fixui.active)).toBe(true);
 
@@ -50,7 +53,9 @@ test("request changes with a note: the held call answers with the entry", async 
   expect(typeof record!.requestedAt).toBe("string");
   expect(typeof record!.resolvedAt).toBe("string");
 
-  await expect(banner).toHaveCount(0);
+  // The request is answered and gone; the panel that hosted it stays.
+  await expect(prompt).toHaveCount(0);
+  await expect(page.locator(CHANGES)).toHaveCount(0);
 });
 
 test("approve with no notes: the agent gets an empty verdict", async ({
@@ -61,7 +66,7 @@ test("approve with no notes: the agent gets an empty verdict", async ({
   await openFixture(page, baseURL!, "basic.html", bridge);
 
   const review = requestReview(bridge, { prompt: "Anything wrong with the toolbar?" });
-  await expect(page.locator(BANNER)).toContainText("Anything wrong with the toolbar?");
+  await expect(page.locator(AGENT)).toContainText("Anything wrong with the toolbar?");
 
   await page.locator(APPROVE).click();
 
@@ -71,12 +76,12 @@ test("approve with no notes: the agent gets an empty verdict", async ({
 });
 
 /**
- * ★ `request_review({url})` moves the reviewer, and the banner has to survive
+ * ★ `request_review({url})` moves the reviewer, and the request has to survive
  * the move. It cannot survive it as an object — the page is torn down — so this
  * is the end-to-end proof of the bridge's replay-on-connect: the fresh page's
  * SSE stream is answered with the review that is still pending.
  */
-test("a review with a url navigates the page and the banner comes back", async ({
+test("a review with a url navigates the page and the panel comes back with it", async ({
   page,
   baseURL,
   bridge,
@@ -92,7 +97,7 @@ test("a review with a url navigates the page and the banner comes back", async (
 
   // Nothing re-sent this: the new page connected and the bridge replayed the
   // review that was still pending for this project.
-  await expect(page.locator(BANNER)).toContainText("Is the upgrade button obvious?");
+  await expect(page.locator(AGENT)).toContainText("Is the upgrade button obvious?");
   expect(await page.evaluate(() => window.fixui.active)).toBe(true);
 
   await page.locator(APPROVE).click();

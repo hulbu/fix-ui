@@ -122,8 +122,8 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
     if (typeof data.url === "string") request.url = data.url;
     if (typeof data.timeoutSeconds === "number") request.timeoutSeconds = data.timeoutSeconds;
     // Only the mode this page knows how to host. Anything else is a newer
-    // bridge talking about a banner this build cannot draw, and the review
-    // banner is the honest fallback — never a mode the user cannot answer.
+    // bridge talking about a mode this build cannot draw, and a plain review
+    // is the honest fallback — never a mode the user cannot answer.
     if (data.mode === "session") request.mode = "session";
     if (request.url) navigate(request.url);
     opts.picker.startReview(request);

@@ -414,7 +414,7 @@ async function handleFetch(
     respond({ ok: true, status: response.status, statusText: response.statusText, body });
 
     // A delivered verdict ends the review: forget it so a page reloaded later
-    // is not shown a banner for a review that is already resolved.
+    // is not shown a request that is already resolved.
     if (response.ok && reviewId) {
       for (const [key, review] of pendingReviews) {
         if (review.reviewId === reviewId) pendingReviews.delete(key);
@@ -439,7 +439,7 @@ async function handleConfig(
   const state = tabId === undefined ? undefined : tabs[String(tabId)];
   const project = state ? state.project : lookupProject(mappings, origin);
   // A review pending for THIS tab, and only this tab: a fresh content script
-  // (the navigation the review itself asked for) re-arms with the banner the
+  // (the navigation the review itself asked for) re-arms with the prompt the
   // stream already delivered. No ambiguity to resolve any more — a stream
   // belongs to one tab, so a pending review names one tab.
   const review = tabId === undefined ? undefined : pendingReviews.get(String(tabId));

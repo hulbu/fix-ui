@@ -1,6 +1,6 @@
 import {
+  AGENT,
   APPROVE,
-  BANNER,
   expect,
   listSurfaces,
   openFixture,
@@ -15,7 +15,7 @@ import {
  * {surfaceId}` is `request_review` aimed at one page. The browser plays the
  * human, twice over.
  */
-test("a review aimed at one surface banners that page and no other", async ({
+test("a review aimed at one surface reaches that page and no other", async ({
   page,
   baseURL,
   bridge,
@@ -43,15 +43,16 @@ test("a review aimed at one surface banners that page and no other", async ({
     surfaceId: beta.surfaceId,
   });
 
-  await expect(second.locator(BANNER)).toContainText("Only the second window, please");
-  // The first page never hears about it — no banner, and its picker stays down.
-  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expect(second.locator(AGENT)).toContainText("Only the second window, please");
+  // The first page never hears about it — nothing opens, and its picker stays
+  // down.
+  await expect(page.locator(AGENT)).toHaveCount(0);
   expect(await page.evaluate(() => window.fixui.active)).toBe(false);
   expect(aimed.settled()).toBe(false);
 
   await second.locator(APPROVE).click();
   expect(await aimed.outcome).toMatchObject({ verdict: "approved", entries: [] });
-  await expect(page.locator(BANNER)).toHaveCount(0);
+  await expect(page.locator(AGENT)).toHaveCount(0);
 
   // An id nobody holds is answered honestly rather than shown to everybody.
   const nowhere = await requestReview(bridge, {
@@ -59,13 +60,13 @@ test("a review aimed at one surface banners that page and no other", async ({
     surfaceId: "not-a-surface",
   }).outcome;
   expect(nowhere).toMatchObject({ verdict: "no-reviewer", entries: [], durationMs: 0 });
-  await expect(page.locator(BANNER)).toHaveCount(0);
-  await expect(second.locator(BANNER)).toHaveCount(0);
+  await expect(page.locator(AGENT)).toHaveCount(0);
+  await expect(second.locator(AGENT)).toHaveCount(0);
 
   // …and a review that names no surface still reaches every page of the project.
   const everyone = requestReview(bridge, { prompt: "Everyone, look at the toolbar" });
-  await expect(page.locator(BANNER)).toContainText("Everyone, look at the toolbar");
-  await expect(second.locator(BANNER)).toContainText("Everyone, look at the toolbar");
+  await expect(page.locator(AGENT)).toContainText("Everyone, look at the toolbar");
+  await expect(second.locator(AGENT)).toContainText("Everyone, look at the toolbar");
 
   await page.locator(APPROVE).click();
   expect(await everyone.outcome).toMatchObject({ verdict: "approved" });

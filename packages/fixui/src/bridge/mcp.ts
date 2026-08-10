@@ -45,7 +45,7 @@ export interface ReviewToolInput {
   project?: string;
   /** One connected page from `list_surfaces`, instead of all of them. */
   surfaceId?: string;
-  /** `session` draws the Submit banner instead of Approve / Request changes;
+  /** `session` draws one Submit button instead of Approve / Request changes;
    *  absent is a plain review (docs/agent-integration.md "Sessions"). */
   mode?: ReviewMode;
   /**
@@ -53,7 +53,7 @@ export interface ReviewToolInput {
    * `notifications/cancelled`, which is what Esc in Claude Code does.
    *
    * Without it an escaped review keeps its project `busy` for the rest of
-   * `timeoutSeconds` (ten minutes by default) with the page's banner still up,
+   * `timeoutSeconds` (ten minutes by default) with the page still asking,
    * and the only recovery in daemon mode is killing an MCP server the session
    * itself owns. The socket-level guard in server.ts covers a different death
    * (the whole proxy process going away), not this one.
@@ -164,7 +164,8 @@ const TOOLS: Tool[] = [
         prompt: {
           type: "string",
           description:
-            "Optional line for the session banner — what you are standing by for. The human " +
+            "Optional line for the session — what you are standing by for, shown at the top " +
+            "of the notes panel. The human " +
             "asked for the session, so a default is fine.",
         },
         url: { type: "string", description: "Page the session should run on; the page navigates." },
@@ -182,7 +183,7 @@ const TOOLS: Tool[] = [
   },
 ];
 
-/** What the banner says when the agent supplied nothing: the human started this
+/** What the panel says when the agent supplied nothing: the human started this
  *  session, so the tool has no business demanding they be told what it is. */
 const DEFAULT_SESSION_PROMPT = "Point at anything that needs fixing, then press Submit.";
 
@@ -242,7 +243,7 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
             ),
           );
 
-        // One held call, two banners. Everything below — targeting, the
+        // One held call, two questions. Everything below — targeting, the
         // timeout, the keep-alive ticker, cancellation — is the same for both;
         // only the mode, and what the prompt is allowed to be, differ.
         case "request_review":
@@ -425,7 +426,7 @@ export function inProcessTools(
         ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
-        // Esc in the client frees the project and stands the banner down, the
+        // Esc in the client frees the project and stands the request down, the
         // same way a dead agent's dropped socket does over HTTP.
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
@@ -512,7 +513,7 @@ export function httpTools(baseUrl: string, defaultProject: string, token?: strin
       // Dropping this request is how the cancellation reaches the daemon: the
       // held `POST /reviews` watches its own response socket and abandons the
       // review the moment it closes (server.ts), which frees the project and
-      // stands the page's banner down.
+      // takes the request off the page.
       const { status, payload } = await call(
         "POST",
         "/reviews",

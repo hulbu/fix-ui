@@ -16,11 +16,21 @@ export const NOTE = "[data-uifb-pop] textarea";
 export const SAVE = "[data-uifb-save]";
 export const BOX = "[data-uifb-box]";
 export const TOAST = "[data-uifb-toast]";
-export const BANNER = "[data-uifb-banner]";
+/**
+ * The agent's prompt, inside the notes panel — there is no separate banner any
+ * more: a session or a review IS the panel, with the prompt at the top and the
+ * buttons under the notes they act on. Its presence is the whole test for "the
+ * page is showing an agent's request".
+ */
+export const AGENT = "[data-uifb-agent]";
+/** The panel's live mark, up for as long as a request is — minimized or not. */
+export const LIVE = "[data-uifb-live]";
 export const APPROVE = "[data-uifb-approve]";
 export const CHANGES = "[data-uifb-changes]";
-/** A session's one button — the whole of what the banner asks for. */
+/** A session's one button — the whole of what it asks for. */
 export const SUBMIT = "[data-uifb-submit]";
+/** Fold the panel to its header bar. */
+export const MINIMIZE = "[data-uifb-min]";
 /** The note count on the chip. Absent entirely when the inbox is empty. */
 export const BADGE = "[data-uifb-badge]";
 
@@ -167,7 +177,7 @@ export function requestReview(
     url?: string;
     surfaceId?: string;
     timeoutSeconds?: number;
-    /** `session` is what `start_fix_ui_session` posts — the Submit banner. */
+    /** `session` is what `start_fix_ui_session` posts — the Submit button. */
     mode?: "review" | "session";
   },
 ): HeldReview {

@@ -270,7 +270,7 @@ describe("connectReviewChannel", () => {
     }
   });
 
-  /** A session is the same channel wearing a different banner: the mode travels
+  /** A session is the same channel asking a different question: the mode travels
    *  on `review-requested`, and the verdict travels back the same way. */
   it("carries a session's mode to the picker and its submitted verdict back", async () => {
     const picker = fakePicker();
@@ -286,7 +286,7 @@ describe("connectReviewChannel", () => {
     });
 
     // An unknown mode is not a mode: an older page would ignore it, and a newer
-    // bridge must not be able to talk this one into a banner it cannot answer.
+    // bridge must not be able to talk this one into a mode it cannot answer.
     source.emit("review-requested", { reviewId: "rev-2", prompt: "plain", mode: "whatever" });
     expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "rev-2", prompt: "plain" });
 

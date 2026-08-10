@@ -605,7 +605,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     }
 
     // Refused rather than defaulted: a mode nobody recognises means the caller
-    // wanted a banner this bridge cannot raise, and quietly giving it the other
+    // wanted a mode this bridge cannot raise, and quietly giving it the other
     // one would put the wrong buttons in front of the human.
     const mode = body.mode;
     if (mode !== undefined && mode !== "review" && mode !== "session") {

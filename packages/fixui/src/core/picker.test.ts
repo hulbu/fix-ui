@@ -5,7 +5,7 @@ import { createPicker, type Picker, type PickerOptions, type ReviewVerdict } fro
 import type { Transport } from "./transport.js";
 
 const NS = "data-uifb";
-const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast],[${NS}-banner]`;
+const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast]`;
 
 type FakeTransport = Transport & { created: FeedbackEntry[]; listed: FeedbackEntry[] };
 
@@ -204,6 +204,11 @@ async function openPanel(): Promise<HTMLElement> {
   return query(`[${NS}-panel]`)!;
 }
 
+/** The open panel — where a session or a review lives now. */
+function panel(): HTMLElement | null {
+  return query(`[${NS}-panel]`);
+}
+
 /**
  * The declarations of the rule whose selector list is EXACTLY `selector`.
  *
@@ -377,35 +382,41 @@ describe("createPicker", () => {
     expect(document.querySelectorAll(UI).length).toBe(0);
   });
 
-  it("startReview shows the banner with the prompt; Approve triggers onVerdict with entryIds of entries saved during the review", async () => {
+  it("startReview opens the panel with the prompt; Approve triggers onVerdict with entryIds of entries saved during the review", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const transport = fakeTransport();
     const picker = make({ transport });
     const verdicts: ReviewVerdict[] = [];
     picker.onVerdict((v) => verdicts.push(v));
 
+    expect(panel()).toBeNull();
     picker.startReview({ reviewId: "rev-1", prompt: "Review the new pricing table" });
 
-    const banner = query(`[${NS}-banner]`);
-    expect(banner).not.toBeNull();
-    expect(banner!.textContent).toContain("Review the new pricing table");
+    // The panel opens itself: the human is not asked to find it.
+    const open = panel()!;
+    expect(open).not.toBeNull();
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toContain(
+      "Review the new pricing table",
+    );
     expect(picker.active).toBe(true); // the agent's flow arms the picker itself
 
     clickSequence(query("#cta")!);
     await typeAndSave("tighten the spacing");
 
-    humanClick(banner!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
 
     expect(verdicts).toEqual([
       { reviewId: "rev-1", verdict: "approved", entryIds: [transport.created[0]!.id] },
     ]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    // The request is answered and gone; the notes it produced are not.
+    expect(query(`[${NS}-agent]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
   });
 
   /**
    * Mechanic 2 re-homes the picker's UI into the page's own modal dialog while
-   * one is open, which puts the banner in the page's light DOM — findable, and
+   * one is open, which puts the panel in the page's light DOM — findable, and
    * `.click()`-able, by page script. `isTrusted` is the browser's own word for
    * "a person did this", and it is the one bit script cannot forge, so a
    * synthesized Approve must resolve nothing: the human-in-the-loop guarantee
@@ -418,20 +429,20 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "rev-1", prompt: "Review the new pricing table" });
-    const banner = query(`[${NS}-banner]`)!;
+    const open = panel()!;
 
     // Exactly what a hostile page can do: find the button, click it.
-    banner.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!.click();
-    banner.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!.click();
-    banner
+    open.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!.click();
+    open.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!.click();
+    open
       .querySelector<HTMLButtonElement>(`[${NS}-approve]`)!
       .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(verdicts).toEqual([]);
-    expect(query(`[${NS}-banner]`)).not.toBeNull(); // still waiting for the human
+    expect(query(`[${NS}-agent]`)).not.toBeNull(); // still waiting for the human
 
     // And the human's own click still works.
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(open.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
     expect(verdicts).toEqual([{ reviewId: "rev-1", verdict: "approved", entryIds: [] }]);
   });
 
@@ -474,9 +485,9 @@ describe("createPicker", () => {
 
     // The stream came back and the bridge replayed the pending review.
     picker.startReview({ reviewId: "rev-1", prompt: "Review the pricing table" });
-    expect(query(`[${NS}-banner]`)!.textContent).toContain("Review the pricing table");
+    expect(query(`[${NS}-agent]`)!.textContent).toContain("Review the pricing table");
 
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!);
     expect(verdicts).toEqual([
       { reviewId: "rev-1", verdict: "changes", entryIds: [transport.created[0]!.id] },
     ]);
@@ -494,20 +505,23 @@ describe("createPicker", () => {
     await typeAndSave("a note for the first review");
 
     picker.startReview({ reviewId: "rev-2", prompt: "Second" });
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
 
     expect(verdicts).toEqual([{ reviewId: "rev-2", verdict: "approved", entryIds: [] }]);
   });
 
-  it("endReview() stands the banner down without a verdict", () => {
+  it("endReview() takes the request out of the panel without a verdict", () => {
     const picker = make({ transport: fakeTransport() });
     const onVerdict = vi.fn();
     picker.onVerdict(onVerdict);
 
     picker.startReview({ reviewId: "rev-2", prompt: "Check the header" });
+    expect(query(`[${NS}-agent]`)).not.toBeNull();
+
     picker.endReview();
 
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-agent]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
     expect(onVerdict).not.toHaveBeenCalled();
   });
@@ -582,7 +596,7 @@ describe("createPicker", () => {
 
   // ── Session mode (human-in-the-loop, batched) ─────────────────────────────
 
-  it("a session banner arms the picker and offers Submit — not Approve/Request changes", async () => {
+  it("a session opens the panel, arms the picker and offers Submit — not Approve/Request changes", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const transport = fakeTransport();
     const picker = make({ transport });
@@ -591,22 +605,33 @@ describe("createPicker", () => {
 
     picker.startReview({ reviewId: "ses-1", prompt: "Fix-UI session", mode: "session" });
 
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner).not.toBeNull();
-    expect(banner.textContent).toContain("Fix-UI session");
+    const open = panel()!;
+    expect(open).not.toBeNull();
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toContain("Fix-UI session");
     expect(picker.active).toBe(true);
     // One button, and it is the one the user is looking for.
-    expect(banner.querySelectorAll("button").length).toBe(1);
-    expect(banner.querySelector(`[${NS}-submit]`)!.textContent).toBe("Submit");
-    expect(banner.querySelector(`[${NS}-approve]`)).toBeNull();
-    expect(banner.querySelector(`[${NS}-changes]`)).toBeNull();
+    const actions = open.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelectorAll("button").length).toBe(1);
+    expect(actions.querySelector(`[${NS}-submit]`)!.textContent).toBe("Submit");
+    expect(actions.querySelector(`[${NS}-approve]`)).toBeNull();
+    expect(actions.querySelector(`[${NS}-changes]`)).toBeNull();
 
     clickSequence(query("#cta")!);
     await typeAndSave("the CTA is the wrong orange");
     clickSequence(query("#cta")!);
     await typeAndSave("and it is too small");
 
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    // Still the same panel, and the notes are listed ABOVE the button that
+    // hands them over — which is the whole reason the two are one surface now.
+    expect(panel()).toBe(open);
+    const rows = [...open.querySelectorAll(`[${NS}-row]`)];
+    expect(rows.length).toBe(2);
+    const submit = open.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
+    expect(
+      rows[1]!.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    humanClick(submit);
 
     expect(verdicts).toEqual([
       {
@@ -615,7 +640,7 @@ describe("createPicker", () => {
         entryIds: transport.created.map((entry) => entry.id),
       },
     ]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
   });
 
@@ -626,10 +651,10 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "ses-2", prompt: "Anything to fix?", mode: "session" });
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
 
     expect(verdicts).toEqual([{ reviewId: "ses-2", verdict: "submitted", entryIds: [] }]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
   });
 
   /** Submit is a decision a human has to make, so it carries the same guard the
@@ -640,14 +665,13 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "ses-3", prompt: "Session", mode: "session" });
-    const banner = query(`[${NS}-banner]`)!;
-    const submit = banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
+    const submit = panel()!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
 
     submit.click();
     submit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(verdicts).toEqual([]);
-    expect(query(`[${NS}-banner]`)).not.toBeNull();
+    expect(query(`[${NS}-agent]`)).not.toBeNull();
 
     humanClick(submit);
     expect(verdicts).toEqual([{ reviewId: "ses-3", verdict: "submitted", entryIds: [] }]);
@@ -667,10 +691,10 @@ describe("createPicker", () => {
     await typeAndSave("tighten the spacing");
 
     picker.startReview({ reviewId: "ses-4", prompt: "Session", mode: "session" });
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner.querySelectorAll("button").length).toBe(1);
+    const actions = panel()!.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelectorAll("button").length).toBe(1);
 
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    humanClick(actions.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
     expect(verdicts).toEqual([
       { reviewId: "ses-4", verdict: "submitted", entryIds: [transport.created[0]!.id] },
     ]);
@@ -682,10 +706,10 @@ describe("createPicker", () => {
     picker.startReview({ reviewId: "ses-5", prompt: "Session", mode: "session" });
     picker.startReview({ reviewId: "rev-9", prompt: "Review" });
 
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner.querySelector(`[${NS}-submit]`)).toBeNull();
-    expect(banner.querySelector(`[${NS}-approve]`)).not.toBeNull();
-    expect(banner.querySelector(`[${NS}-changes]`)).not.toBeNull();
+    const actions = panel()!.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelector(`[${NS}-submit]`)).toBeNull();
+    expect(actions.querySelector(`[${NS}-approve]`)).not.toBeNull();
+    expect(actions.querySelector(`[${NS}-changes]`)).not.toBeNull();
   });
 
   it("a rejected create is reported as an error, not as a save", async () => {
@@ -1436,10 +1460,10 @@ describe("the crosshair while armed", () => {
     expect(armedCursor(`[${NS}-drag] *`)).toBe("grab!important");
     expect(armedCursor(`[${NS}-panel][${NS}-dragging] [${NS}-drag]`)).toBe("grabbing!important");
 
-    // Every button the picker draws.
+    // Every button the picker draws. The verdict buttons live in the panel
+    // now, so `[panel] button` is what covers them — there is no third surface.
     expect(armedCursor(`[${NS}-panel] button`)).toBe("pointer!important");
     expect(armedCursor(`[${NS}-pop] button`)).toBe("pointer!important");
-    expect(armedCursor(`[${NS}-banner] button`)).toBe("pointer!important");
     // …except the one that cannot be pressed: an empty note is not a note.
     expect(armedCursor(`[${NS}-pop] button[disabled]`)).toBe("default!important");
 
@@ -1447,7 +1471,7 @@ describe("the crosshair while armed", () => {
     expect(armedCursor(`[${NS}-pop] textarea`)).toBe("text!important");
 
     // The picker's surfaces are not pick targets: no crosshair on them.
-    for (const surface of [`[${NS}-panel]`, `[${NS}-pop]`, `[${NS}-banner]`, `[${NS}-toast]`]) {
+    for (const surface of [`[${NS}-panel]`, `[${NS}-pop]`, `[${NS}-toast]`]) {
       expect(armedCursor(surface)).toBe("default!important");
     }
   });
@@ -1569,5 +1593,146 @@ describe("the chip centres its glyph by layout", () => {
     // No stray text nodes in either: a space would be a glyph off-centre.
     expect(open.querySelector(`[${NS}-grip]`)!.textContent).toBe("");
     expect(open.querySelector(`[${NS}-min]`)!.textContent).toBe("");
+  });
+});
+
+/**
+ * The session/review banner used to be a third floating element — 660px of
+ * dark bar across the top of somebody's app, next to the chip and next to the
+ * panel it duplicated. It is the notes panel now: the agent's prompt is the
+ * panel's header area, and the verdict buttons sit under the notes they act on.
+ * The panel is still draggable, still minimizable, and still re-homes into an
+ * open modal.
+ */
+describe("the agent's request lives in the notes panel", () => {
+  it("has no banner element or banner styling left anywhere", () => {
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+    picker.startReview({ reviewId: "rev-1", prompt: "Look at the header", mode: "session" });
+
+    expect(document.querySelector(`[${NS}-banner]`)).toBeNull();
+    for (const sheet of document.querySelectorAll(`style[${NS}]`)) {
+      expect(sheet.textContent).not.toContain(`${NS}-banner`);
+    }
+  });
+
+  it("opens the panel by itself and un-folds it so the prompt is readable", async () => {
+    const picker = make({ transport: fakeTransport() });
+
+    // The user left it minimized last time they used it.
+    const open = await openPanel();
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+    expect(open.hasAttribute(`${NS}-minimized`)).toBe(true);
+    query(`[${NS}-chip]`)!.click(); // …and then closed it entirely
+    expect(panel()).toBeNull();
+
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const reopened = panel()!;
+    expect(reopened).not.toBeNull();
+    expect(reopened.hasAttribute(`${NS}-minimized`)).toBe(false);
+    expect(reopened.querySelector(`[${NS}-agent]`)!.textContent).toBe("Anything to fix?");
+    expect(reopened.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // One primary action while an agent is waiting, and it is Submit — the
+    // marker the quieter Pick button hangs off.
+    expect(reopened.hasAttribute(`${NS}-req`)).toBe(true);
+    expect(ruleFor(`[${NS}-panel][${NS}-req] [${NS}-pick]`)).toContain("background:#00000010");
+
+    picker.endReview();
+    expect(reopened.hasAttribute(`${NS}-req`)).toBe(false);
+  });
+
+  /** Losing the state behind a collapse is the failure mode to avoid. */
+  it("keeps a live session obvious while the panel is minimized", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+
+    expect(open.hasAttribute(`${NS}-minimized`)).toBe(true);
+    // The body is folded away — prompt and Submit with it…
+    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    expect(open.querySelector(`[${NS}-actions]`)).toBeNull();
+    // …but the header still says a session is running, in words and in a mark.
+    expect(open.querySelector("h4")!.textContent).toBe("Session running");
+    expect(open.querySelector(`[${NS}-live]`)).not.toBeNull();
+    // …and the chip is still pulsing, because the picker is still armed.
+    expect(picker.active).toBe(true);
+    expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
+
+    // Restoring brings the whole request back.
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toBe("Anything to fix?");
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // A review says the other thing, and says it the same way.
+    picker.startReview({ reviewId: "rev-2", prompt: "Check the header" });
+    expect(panel()!.querySelector("h4")!.textContent).toBe("Review requested");
+    expect(panel()!.querySelector(`[${NS}-live]`)).not.toBeNull();
+  });
+
+  /** The live mark is motion; the people who turned motion off still get it. */
+  it("stills the live mark under reduced motion rather than removing it", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+    const reduced = sheet.slice(sheet.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain(`[${NS}-live]{animation:none;}`);
+    // …and the dot itself is a solid mark, not a thing that only exists in the
+    // animation's bright half.
+    expect(ruleFor(`[${NS}-live]`)).toContain(`background:${ACCENT}`);
+  });
+
+  /** Mechanic 2, with the merged surface: the request must be answerable from
+   *  inside the page's own modal, which is where the panel now has to be. */
+  it("re-homes into an open modal dialog while a session is running", async () => {
+    document.body.innerHTML = `<dialog id="modal">m</dialog>`;
+    const picker = make({ transport: fakeTransport() });
+
+    picker.startReview({ reviewId: "ses-1", prompt: "Check the modal", mode: "session" });
+    expect(panel()!.parentNode).toBe(document.body);
+
+    query("#modal")!.setAttribute("open", "");
+    await settle();
+
+    const moved = panel()!;
+    expect(moved.parentNode).toBe(query("#modal"));
+    expect(moved.querySelector(`[${NS}-agent]`)!.textContent).toBe("Check the modal");
+    expect(moved.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    query("#modal")!.removeAttribute("open");
+    await settle();
+    expect(panel()!.parentNode).toBe(document.body);
+  });
+
+  /** Arming used to close the panel; a session lives in it, so it must not. */
+  it("keeps the panel open when the picker arms during a session", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    open.querySelector<HTMLButtonElement>(`[${NS}-pick]`)!.click();
+
+    expect(panel()).toBe(open);
+    expect(picker.active).toBe(true);
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // With no session on, "Pick an element" still gets the panel out of the way.
+    picker.endReview();
+    panel()!.querySelector<HTMLButtonElement>(`[${NS}-pick]`)!.click();
+    expect(panel()).toBeNull();
+  });
+
+  /** The panel keeps its own manners: dragged where the user put it. */
+  it("stays draggable by its header while a session is running", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    dragFrom(open.querySelector<HTMLElement>(`[${NS}-drag]`)!, 200, 200, 320, 290);
+
+    expect(open.style.left).toBe("120px");
+    expect(open.style.top).toBe("90px");
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
   });
 });
