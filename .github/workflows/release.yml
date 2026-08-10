@@ -39,7 +39,6 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       # Node 22 bundles npm 10.x, which has no idea trusted publishing exists —
       # it skips the OIDC exchange entirely and fails with ENEEDAUTH, as if no
@@ -70,6 +69,12 @@ jobs:
             echo "::notice::Releasing fixui@$local_version (npm has $published)."
           fi
 
+      # No `registry-url` on setup-node and no NODE_AUTH_TOKEN here, deliberately.
+      # `registry-url` writes an .npmrc line reading the token from that env var;
+      # with no secret set it expands to a placeholder, npm treats it as configured
+      # credentials, fails auth, and never attempts OIDC — ENEEDAUTH with trusted
+      # publishing set up correctly. Trusted publishing needs NO credentials.
+      #
       # `npm`, not `pnpm`: OIDC trusted publishing is an npm CLI feature and
       # pnpm does not perform the token exchange. The only reason this ever used
       # pnpm was rewriting `workspace:*` dependencies, and the single-package
@@ -80,8 +85,6 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm publish --provenance --access public
         working-directory: packages/fixui
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Tag the release
         if: steps.check.outputs.publish == 'true'
