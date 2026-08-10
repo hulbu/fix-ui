@@ -64,9 +64,15 @@ jobs:
             echo "::notice::Releasing fixui@$local_version (npm has $published)."
           fi
 
+      # `npm`, not `pnpm`: OIDC trusted publishing is an npm CLI feature and
+      # pnpm does not perform the token exchange. The only reason this ever used
+      # pnpm was rewriting `workspace:*` dependencies, and the single-package
+      # merge left none — `fixui` depends on the MCP SDK and nothing local.
+      # `--provenance` records where the artifact was built, which OIDC makes
+      # free. `prepack` still builds, whichever CLI runs it.
       - name: Publish
         if: steps.check.outputs.publish == 'true'
-        run: pnpm publish --no-git-checks
+        run: npm publish --provenance --access public
         working-directory: packages/fixui
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
