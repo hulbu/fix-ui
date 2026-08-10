@@ -30,7 +30,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # the tag step pushes back to the repo
       id-token: write # OIDC; harmless when publishing with a token instead
     steps:
       - uses: actions/checkout@v4
@@ -81,19 +81,6 @@ jobs:
       # merge left none — `fixui` depends on the MCP SDK and nothing local.
       # `--provenance` records where the artifact was built, which OIDC makes
       # free. `prepack` still builds, whichever CLI runs it.
-      # Diagnostic: OIDC is only possible when GitHub injects these. If the URL
-      # is empty, id-token:write never reached the job and npm cannot even try
-      # the exchange — which surfaces as ENEEDAUTH, indistinguishable from a
-      # missing token. Prints presence only, never the value.
-      - name: Can this job get an OIDC token?
-        run: |
-          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-            echo "OIDC request URL: present"
-          else
-            echo "OIDC request URL: MISSING — id-token:write did not reach this job"
-          fi
-          echo "npm: $(npm --version)"
-
       - name: Publish
         if: steps.check.outputs.publish == 'true'
         run: npm publish --provenance --access public
