@@ -27,6 +27,14 @@ https://raw.githubusercontent.com/hulbu/fix-ui/main/prompt.md
 Your agent reads that page, installs, wires your framework, and verifies the
 picker appears before calling it done. Prefer to do it yourself? `npx fixui init`.
 
+## How to ask for it
+
+Point at something, describe what should change — then say one of two things:
+
+- **`fix ui`** — the agent works through the notes you have already left.
+- **`start a fix ui session`** — the agent stands by while you walk the UI,
+  fixes each batch you submit, and waits again.
+
 ## The loop
 
 ```
