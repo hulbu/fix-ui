@@ -428,6 +428,28 @@ it("an empty submit is an answer, and a session's timeout is still an outcome", 
   expect(await stream.next("review-cancelled")).toEqual({ reviewId: second.reviewId });
 });
 
+/**
+ * A review is a question, so the route still insists on one. A session is not:
+ * its panel shows a fixed instruction, and what the agent changed is a terminal
+ * report — so there is nothing for a prompt to carry and nothing to demand.
+ */
+it("a session needs no prompt; a review still does", async () => {
+  const stream = await openStream();
+
+  const session = requestReview({ mode: "session", timeoutSeconds: 5 });
+  const requested = await stream.next("review-requested");
+  expect(requested.mode).toBe("session");
+  await postVerdict(requested.reviewId, { verdict: "submitted", entryIds: [] });
+  expect((await body(await session)).verdict).toBe("submitted");
+
+  const bare = await requestReview({ timeoutSeconds: 5 });
+  expect(bare.status).toBe(400);
+  expect((await body(bare)).error).toMatch(/prompt/);
+
+  const blank = await requestReview({ prompt: "   ", timeoutSeconds: 5 });
+  expect(blank.status).toBe(400);
+});
+
 it("rejects a mode that is not a mode, and never mentions the default one", async () => {
   const stream = await openStream();
 

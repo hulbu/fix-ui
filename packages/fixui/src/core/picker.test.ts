@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ConsoleError, FeedbackEntry } from "./entry.js";
-import { createPicker, type Picker, type PickerOptions, type ReviewVerdict } from "./picker.js";
+import {
+  createPicker,
+  SESSION_INSTRUCTION,
+  type Picker,
+  type PickerOptions,
+  type ReviewVerdict,
+} from "./picker.js";
 import type { Transport } from "./transport.js";
 
 const NS = "data-uifb";
@@ -607,7 +613,10 @@ describe("createPicker", () => {
 
     const open = panel()!;
     expect(open).not.toBeNull();
-    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toContain("Fix-UI session");
+    // The panel says how to drive it, and nothing the agent typed.
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    expect(open.textContent).not.toContain("Fix-UI session");
     expect(picker.active).toBe(true);
     // One button, and it is the one the user is looking for.
     const actions = open.querySelector(`[${NS}-actions]`)!;
@@ -644,6 +653,55 @@ describe("createPicker", () => {
     expect(picker.active).toBe(false);
   });
 
+  /**
+   * ★ The page is the tool; the terminal is the conversation.
+   *
+   * The reported case, verbatim: the agent passed its account of the last batch
+   * as the session prompt, and a 290px floating control turned into a message
+   * surface restating prose the human had already read in the terminal. A
+   * session's panel is an instruction and nothing else.
+   */
+  it("a session never renders the agent's prose, whatever it passed", () => {
+    const prose =
+      "Changed the Get started button to yellow (and switched its text to dark for contrast, " +
+      "since white on yellow was hard to read). Still standing by for more notes.";
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-p", prompt: prose, mode: "session" });
+
+    const open = panel()!;
+    expect(open.textContent).not.toContain("Get started");
+    expect(open.textContent).not.toContain("Still standing by");
+    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    // What it says instead — one line, and it names the button it sits above.
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+  });
+
+  /** …so a session has no use for a prompt, and must not need one. */
+  it("a session with no prompt at all still says what to do", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-np", mode: "session" });
+
+    expect(panel()!.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(panel()!.querySelector(`[${NS}-agent]`)).toBeNull();
+  });
+
+  /**
+   * The other half of the same rule: a review IS a question, and the human
+   * cannot answer one they cannot read. This is the one place agent text
+   * belongs on the page.
+   */
+  it("a review still renders the agent's prompt, and no session instruction", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "rev-p", prompt: "Made the CTA full-width — does it crowd?" });
+
+    const open = panel()!;
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toBe(
+      "Made the CTA full-width — does it crowd?",
+    );
+    expect(open.querySelector(`[${NS}-instruction]`)).toBeNull();
+  });
+
   /** "Nothing wrong, carry on" is a legitimate answer, and it must not hang. */
   it("an empty submit ends the session with zero entries", () => {
     const picker = make({ transport: fakeTransport() });
@@ -671,7 +729,7 @@ describe("createPicker", () => {
     submit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(verdicts).toEqual([]);
-    expect(query(`[${NS}-agent]`)).not.toBeNull();
+    expect(query(`[${NS}-instruction]`)).not.toBeNull(); // still standing by
 
     humanClick(submit);
     expect(verdicts).toEqual([{ reviewId: "ses-3", verdict: "submitted", entryIds: [] }]);
@@ -1847,7 +1905,7 @@ describe("the agent's request lives in the notes panel", () => {
     const reopened = panel()!;
     expect(reopened).not.toBeNull();
     expect(reopened.hasAttribute(`${NS}-minimized`)).toBe(false);
-    expect(reopened.querySelector(`[${NS}-agent]`)!.textContent).toBe("Anything to fix?");
+    expect(reopened.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
     expect(reopened.querySelector(`[${NS}-submit]`)).not.toBeNull();
 
     // One primary action while an agent is waiting, and it is Submit — the
@@ -1868,8 +1926,8 @@ describe("the agent's request lives in the notes panel", () => {
     open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
 
     expect(open.hasAttribute(`${NS}-minimized`)).toBe(true);
-    // The body is folded away — prompt and Submit with it…
-    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    // The body is folded away — instruction and Submit with it…
+    expect(open.querySelector(`[${NS}-instruction]`)).toBeNull();
     expect(open.querySelector(`[${NS}-actions]`)).toBeNull();
     // …but the header still says a session is running, in words and in a mark.
     expect(open.querySelector("h4")!.textContent).toBe("Session running");
@@ -1880,7 +1938,7 @@ describe("the agent's request lives in the notes panel", () => {
 
     // Restoring brings the whole request back.
     open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
-    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toBe("Anything to fix?");
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
     expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
 
     // A review says the other thing, and says it the same way.
@@ -1914,7 +1972,7 @@ describe("the agent's request lives in the notes panel", () => {
 
     const moved = panel()!;
     expect(moved.parentNode).toBe(query("#modal"));
-    expect(moved.querySelector(`[${NS}-agent]`)!.textContent).toBe("Check the modal");
+    expect(moved.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
     expect(moved.querySelector(`[${NS}-submit]`)).not.toBeNull();
 
     query("#modal")!.removeAttribute("open");

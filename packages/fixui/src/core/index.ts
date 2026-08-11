@@ -15,6 +15,7 @@ export {
 export { createTransport, type Transport, type TransportOptions } from "./transport.js";
 export {
   createPicker,
+  SESSION_INSTRUCTION,
   type Picker,
   type PickerOptions,
   type ReviewRequest,

@@ -2,6 +2,7 @@ import {
   AGENT,
   APPROVE,
   CHANGES,
+  INSTRUCTION,
   PANEL,
   expect,
   fixtureUrl,
@@ -30,6 +31,10 @@ test("request changes with a note: the held call answers with the entry", async 
   // the picker arms, and nobody goes hunting for the chip.
   const prompt = page.locator(AGENT);
   await expect(prompt).toContainText("Check the hero section");
+  // The one place agent text belongs on the page: a review is a question, and
+  // it cannot be answered unread. (A session gets the fixed instruction and
+  // none of this — see session.spec.ts.)
+  await expect(page.locator(INSTRUCTION)).toHaveCount(0);
   await expect(page.locator(PANEL)).toHaveCount(1);
   expect(review.settled()).toBe(false);
   expect(await page.evaluate(() => window.fixui.active)).toBe(true);

@@ -164,9 +164,28 @@ export interface PickerOptions {
  */
 export type ReviewMode = "review" | "session";
 
+/**
+ * The whole of what a session's panel says — fixed, and never the agent's own
+ * words.
+ *
+ * The page is the tool; the terminal is the conversation. A session's panel is
+ * a small floating control, so its job is to tell the human how to drive it:
+ * point, describe, submit. The agent's account of what it changed ("switched
+ * the text to dark, since white on yellow was hard to read") is conversation,
+ * and it belongs in the terminal where there is room for it and a history to
+ * read it in.
+ *
+ * A review is the one exception, and it is the reason `mode` exists here: a
+ * review asks a question the human cannot answer without reading it, so the
+ * agent's prompt is rendered there and only there.
+ */
+export const SESSION_INSTRUCTION = "Point at an element, describe the fix, then press Submit.";
+
 export interface ReviewRequest {
   reviewId: string;
-  prompt: string;
+  /** The agent's question. Required for a review, which is a question; ignored
+   *  for a session, whose panel says the same fixed thing every time. */
+  prompt?: string;
   url?: string;
   timeoutSeconds?: number;
   /** Absent means `review` — an older bridge never mentions it. */
@@ -285,7 +304,8 @@ export function createPicker(opts: PickerOptions): Picker {
     entryIds: string[];
     armed: boolean;
     mode: ReviewMode;
-    /** The agent's own words, kept so every repaint of the panel restates them. */
+    /** The agent's own words, kept so every repaint of a REVIEW restates them.
+     *  A session never paints this — see SESSION_INSTRUCTION. */
     prompt: string;
   } | null = null;
   const verdictListeners = new Set<(v: ReviewVerdict) => void>();
@@ -387,6 +407,10 @@ export function createPicker(opts: PickerOptions): Picker {
        the buttons at the bottom act on. */
     [${NS}-agent]{margin:0 0 10px;padding:8px 10px;border-radius:10px;
       background:${accent}14;border:1px solid ${accent}55;color:#1c1c1c;}
+    /* A session's one line: how to drive the panel, not what the agent said.
+       Quieter than the review block on purpose — it is standing instruction
+       rather than a question waiting on an answer. */
+    [${NS}-instruction]{margin:0 0 10px;color:#00000088;}
     /* Separated from the list, because that is what they act on. */
     [${NS}-actions]{display:flex;gap:6px;margin-top:10px;padding-top:10px;
       border-top:1px solid #00000014;}
@@ -1037,8 +1061,22 @@ ${CURSOR_CSS}  `;
     // Minimized IS the header bar — and it stays wherever it was dragged to.
     if (minimized) return;
 
-    // The agent's prompt, at the top of the panel: what it is standing by for.
-    if (review) {
+    // What the panel is for, at the top of it — and which of the two it says is
+    // the whole difference between the modes.
+    //
+    // A REVIEW restates the agent's prompt: it asked a question, and a question
+    // you cannot read is a question you cannot answer.
+    //
+    // A SESSION says the same fixed line every time. The agent's report of what
+    // it changed goes to the terminal (skills/fix-ui/SKILL.md, "Reporting");
+    // rendering it here turned a 290px control into a message surface, restating
+    // prose the human had already read in the conversation they were having.
+    if (review?.mode === "session") {
+      const how = document.createElement("p");
+      how.setAttribute(`${NS}-instruction`, "");
+      how.textContent = SESSION_INSTRUCTION;
+      panel.append(how);
+    } else if (review) {
       const agent = document.createElement("p");
       agent.setAttribute(`${NS}-agent`, "");
       // textContent, never innerHTML: the prompt is somebody else's text.
@@ -1046,7 +1084,10 @@ ${CURSOR_CSS}  `;
       panel.append(agent);
     }
 
-    if (entries.length === 0) {
+    // "No notes yet — pick an element and describe the fix" is the instruction
+    // above, worded twice; a session shows one of them, and it is the one that
+    // also names the button.
+    if (entries.length === 0 && review?.mode !== "session") {
       const empty = document.createElement("p");
       empty.style.color = "#00000088";
       empty.style.margin = "0 0 10px";
@@ -1394,10 +1435,10 @@ ${CURSOR_CSS}  `;
       armed: !active,
       // A bridge that never mentions a mode is asking for the original review.
       mode: req.mode ?? "review",
-      prompt: req.prompt,
+      prompt: req.prompt ?? "",
     };
     // A resume may restate the prompt; the ids it has already collected stay.
-    review.prompt = req.prompt;
+    review.prompt = req.prompt ?? "";
     // A NEW request has to be readable the moment it arrives — a panel the user
     // folded away an hour ago would otherwise hide the question. A RESUME is
     // left alone: if it is minimized, the human minimized it during this very

@@ -18,11 +18,17 @@ export const BOX = "[data-uifb-box]";
 export const TOAST = "[data-uifb-toast]";
 /**
  * The agent's prompt, inside the notes panel — there is no separate banner any
- * more: a session or a review IS the panel, with the prompt at the top and the
- * buttons under the notes they act on. Its presence is the whole test for "the
- * page is showing an agent's request".
+ * more: a review IS the panel, with the question at the top and the buttons
+ * under the notes they act on.
+ *
+ * A REVIEW only. The page is the tool and the terminal is the conversation, so
+ * a session's panel says a fixed instruction (INSTRUCTION, below) and the
+ * agent's account of what it changed goes to the terminal instead.
  */
 export const AGENT = "[data-uifb-agent]";
+/** A session's fixed line, and the whole of what its panel says. */
+export const INSTRUCTION = "[data-uifb-instruction]";
+export const SESSION_INSTRUCTION = "Point at an element, describe the fix, then press Submit.";
 /** The panel's live mark, up for as long as a request is — minimized or not. */
 export const LIVE = "[data-uifb-live]";
 export const APPROVE = "[data-uifb-approve]";
@@ -182,7 +188,8 @@ export interface HeldReview {
 export function requestReview(
   bridge: Bridge,
   body: {
-    prompt: string;
+    /** A review must ask something. A session asks nothing — it takes no prompt. */
+    prompt?: string;
     url?: string;
     surfaceId?: string;
     timeoutSeconds?: number;

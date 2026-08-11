@@ -290,6 +290,17 @@ describe("connectReviewChannel", () => {
     source.emit("review-requested", { reviewId: "rev-2", prompt: "plain", mode: "whatever" });
     expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "rev-2", prompt: "plain" });
 
+    // A session carries no prompt at all now — its panel says a fixed line, and
+    // the agent's account of the batch goes to the terminal. So the channel must
+    // pass one through without inventing a prompt for it…
+    source.emit("review-requested", { reviewId: "ses-2", mode: "session" });
+    expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "ses-2", mode: "session" });
+
+    // …while a review with no prompt is still a question with no question in
+    // it: unanswerable on the page, so it is not raised.
+    source.emit("review-requested", { reviewId: "rev-3" });
+    expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "ses-2", mode: "session" });
+
     picker.verdict({ reviewId: "ses-1", verdict: "submitted", entryIds: ["e1"] });
     await settle();
     expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({

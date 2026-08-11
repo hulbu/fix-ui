@@ -186,6 +186,10 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
   expect(session.description).toMatch(/resolve_feedback/);
   expect(session.inputSchema.properties).toHaveProperty("surfaceId");
   expect(session.inputSchema.required).toBeUndefined(); // a session needs no prompt
+  // …and does not offer one: the panel says a fixed line, and what the agent
+  // changed is a TERMINAL report, not something to put on the page.
+  expect(session.inputSchema.properties).not.toHaveProperty("prompt");
+  expect(session.description).toMatch(/terminal/i);
   for (const tool of tools.tools) {
     expect(typeof tool.description).toBe("string");
     expect(tool.inputSchema.type).toBe("object");
@@ -399,10 +403,13 @@ it("proxy mode: start_fix_ui_session forwards the session over HTTP", async () =
     const client = await linkedTools(httpTools(`http://127.0.0.1:${bridge.port}`, dir));
     const call = client.callTool({
       name: "start_fix_ui_session",
+      // Passed and ignored: a session takes no prompt, and an agent that sends
+      // one anyway must not get its prose onto the page (`POST /reviews` accepts
+      // a session without one, which is what the empty prompt below proves).
       arguments: { prompt: "anything broken?", timeoutSeconds: 5 },
     });
     await waitUntil(() => page.events.includes("review-requested"), "the page to be armed");
-    expect(page.requested()).toMatchObject({ mode: "session", prompt: "anything broken?" });
+    expect(page.requested()).toMatchObject({ mode: "session", prompt: "" });
 
     await bridge.broker.submitVerdict(page.reviewId(), "submitted", []);
     expect(JSON.parse(((await call) as any).content[0].text).verdict).toBe("submitted");
