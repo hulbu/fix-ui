@@ -1,7 +1,7 @@
 {
   "name": "fixui",
-  "version": "0.2.1",
-  "description": "Point at any UI element in your running app and leave a note for your coding agent.",
+  "version": "0.3.0",
+  "description": "Point at any UI element in your running app and leave a note for your coding agent. Say \"fix ui\", or \"start a fix ui session\".",
   "keywords": [
     "fix-ui",
     "feedback",

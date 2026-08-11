@@ -64,11 +64,11 @@ Start the dev server and open the app. **An orange circle should appear bottom-r
 
 **Leave a note.** Click the circle — it pulses while active. Click any element on the page, type what should change, save. Drag the circle if it's in your way.
 
-**Get it fixed.** Tell your agent:
+**Get it fixed.** Tell your agent one of two things:
 
-> fix ui
-
-It reads your notes, fixes them, and clears them.
+- **`fix ui`** — the agent works through the notes you have already left.
+- **`start a fix ui session`** — the agent stands by while you walk the UI,
+  fixes each batch you submit, and waits again.
 
 **That's the whole loop.** Point, describe, say `fix ui`.
 

@@ -45,7 +45,8 @@ from the edit alone is the same defect as resolving an entry you did not fix.
    `consoleErrors` is often the actual cause of the complaint.
 3. `resolve_feedback(id)` — only after the fix is real. Resolving removes the
    entry permanently; there is no undo and no tombstone.
-4. Go to the review loop before you report back.
+4. Report the batch in the terminal — see [Reporting a batch](#reporting-a-batch-in-the-terminal-never-on-the-page).
+5. Go to the review loop before you report back.
 
 ## The review loop
 
@@ -71,8 +72,12 @@ pending — wait for it, never start a second.
 
 A **session** is the other direction of the same channel: instead of asking
 about one change you made, you stand by while the human walks their own UI and
-points at whatever they find. The page shows one button — **Submit** — and your
-call blocks until they press it.
+points at whatever they find. The page shows a fixed instruction and one button
+— **Submit** — and your call blocks until they press it.
+
+`start_fix_ui_session` takes no prompt, and the panel shows none: it is a small
+floating control, not somewhere to write to the human. What you changed goes in
+your terminal reply between rounds — see [Reporting a batch](#reporting-a-batch-in-the-terminal-never-on-the-page).
 
 ### How the user asks for one
 
@@ -95,7 +100,8 @@ start_fix_ui_session()          ← say the session is live, then wait
         │
         ├─ submitted  → the entries ARE the batch.
         │               Fix every one. resolve_feedback(id) each one you
-        │               actually fixed. Then start the NEXT session. Loop.
+        │               actually fixed. Report it in the terminal (✓ / ⚠).
+        │               Then start the NEXT session. Loop.
         │               (Zero entries is a real answer: "nothing wrong,
         │                carry on" — still start the next session unless
         │                they said to stop.)
@@ -124,6 +130,43 @@ means one is already pending. Never run a session and a review at once.
 **Say the session is live before you block.** The user needs to know the page is
 armed and that you are waiting on their Submit — otherwise the terminal just
 looks hung.
+
+## Reporting a batch: in the terminal, never on the page
+
+**The page is the tool. The terminal is the conversation.** The panel the human
+sees is a control — it says how to use it and nothing else. Everything you have
+to *tell* them goes in your terminal reply.
+
+After acting on a batch — whether it came from `fix ui` or from a session
+submit — report there, in this shape:
+
+```
+✓ Changed the Get started button to yellow, and its text to dark, since white on
+  yellow was hard to read
+✓ Tightened the pricing card gap to 12px
+⚠ "Make the nav feel lighter" — lighter how? Less weight, more spacing, or fewer
+  items?
+```
+
+- **`✓` for each thing you genuinely changed**, naming it concretely: what you
+  changed, and why, when the why is not obvious. "Fixed the button" says
+  nothing. The reasoning is the useful part — it is what lets them disagree with
+  a judgement call you made on their behalf.
+- **`⚠` for anything you could not do, or need clarified**, phrased as the
+  actual question rather than a status. Not "one note was ambiguous" — ask it.
+
+Two rules, and they are the same discipline the inbox loop already applies to
+`resolve_feedback`:
+
+- **A note you did not act on gets a `⚠`, never silence.** Dropping it is how a
+  human ends up believing something was fixed because you did not say it wasn't.
+- **Never report `✓` for something you did not verify.** An edit you have not
+  seen take effect is not a change; say what you did and what you are unsure of.
+
+This is the same report in both directions. A session submit is a batch like any
+other: fix it, `resolve_feedback` each one, report as above — **then** call
+`start_fix_ui_session` again for the next round. The report belongs between the
+rounds, in the terminal, and never as text pushed onto the page.
 
 ## An empty inbox is a diagnosis, not an answer
 
@@ -157,6 +200,8 @@ lives on a specific page; the picker follows it.
 - Concluding "empty inbox" without checking whether the bridge is up.
 - Resolving entries you did not actually fix, to clear the list.
 - Starting a second review or session while one is pending.
+- Going quiet on a note you did not act on instead of raising it as a `⚠`.
+- Reporting `✓` for a change you have not verified.
 
 ## Common mistakes
 

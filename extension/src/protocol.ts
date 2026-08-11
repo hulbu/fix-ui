@@ -565,7 +565,7 @@ export function parseReviewRequested(data: string): ReviewRequestMessage | null 
     request.timeoutSeconds = body.timeoutSeconds;
   }
   // Only the mode this build knows how to draw. Anything else — a newer
-  // bridge, a hostile page — falls back to the review banner, which every
+  // bridge, a hostile page — falls back to the plain review, which every
   // build can answer.
   if (body.mode === "session") request.mode = "session";
   return request;

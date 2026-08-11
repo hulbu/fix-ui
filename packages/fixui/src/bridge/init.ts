@@ -714,8 +714,8 @@ const HOW_TO_USE = [
   "  2. type what should change, and send it",
   "  3. tell your agent `fix ui` — it reads your notes and works through them",
   "",
-  "  Your agent can also ask you to check its own work: a review banner appears on",
-  "  the page, and each answer goes straight back to it.",
+  "  Your agent can also ask you to check its own work: the notes panel opens on",
+  "  the page with its question, and each answer goes straight back to it.",
 ].join("\n");
 
 // ── the command ─────────────────────────────────────────────────────────────

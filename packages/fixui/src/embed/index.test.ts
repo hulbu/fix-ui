@@ -296,8 +296,12 @@ describe("initFixUi", () => {
       prompt: "Does the header look right now?",
     });
 
-    expect(document.querySelector(`[${NS}-banner]`)?.textContent).toContain("Does the header look right now?");
-    humanClick(document.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    // The request lands in the notes panel, which opens itself to carry it.
+    const panel = document.querySelector(`[${NS}-panel]`)!;
+    expect(panel.querySelector(`[${NS}-agent]`)?.textContent).toContain(
+      "Does the header look right now?",
+    );
+    humanClick(panel.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
     await settle();
 
     const verdict = fetchImpl.calls.find((call) => call.url.includes("/reviews/"));

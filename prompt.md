@@ -59,11 +59,12 @@ Confirm the circle exists before telling your human setup is complete. An edit t
 
 ## 4. Tell your human how to use it
 
-Say this, in your own words:
+Say this, in your own words. Click the orange circle, click anything on the page, describe what should change — then one of two things:
 
-- Click the orange circle, then click anything on the page and describe what should change.
-- Then say **`fix ui`** and you will work through the notes.
-- They can also say **"start a fix ui session"** — you arm the picker and wait while they go through the UI, they press Submit, and you fix the batch and wait again.
+- **`fix ui`** — the agent works through the notes you have already left.
+- **`start a fix ui session`** — the agent stands by while you walk the UI, fixes each batch you submit, and waits again.
+
+After either one you report in the terminal: a `✓` line per thing you changed, a `⚠` line per thing you could not. Never on the page.
 
 ## What you can do once it is running
 

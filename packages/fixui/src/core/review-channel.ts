@@ -117,14 +117,20 @@ export function connectReviewChannel(opts: ReviewChannelOptions): ReviewChannel 
 
   function onRequested(event: MessageEvent): void {
     const data = parse(event.data);
-    if (!data || typeof data.reviewId !== "string" || typeof data.prompt !== "string") return;
-    const request: ReviewRequest = { reviewId: data.reviewId, prompt: data.prompt };
+    if (!data || typeof data.reviewId !== "string") return;
+    // Only the mode this page knows how to host. Anything else is a newer
+    // bridge talking about a mode this build cannot draw, and a plain review
+    // is the honest fallback — never a mode the user cannot answer.
+    const session = data.mode === "session";
+    // A review with no prompt is a question with no question in it — malformed,
+    // and unanswerable on the page. A session has no such need: its panel says
+    // a fixed line and the agent's words go to the terminal instead.
+    if (typeof data.prompt !== "string" && !session) return;
+    const request: ReviewRequest = { reviewId: data.reviewId };
+    if (typeof data.prompt === "string") request.prompt = data.prompt;
     if (typeof data.url === "string") request.url = data.url;
     if (typeof data.timeoutSeconds === "number") request.timeoutSeconds = data.timeoutSeconds;
-    // Only the mode this page knows how to host. Anything else is a newer
-    // bridge talking about a banner this build cannot draw, and the review
-    // banner is the honest fallback — never a mode the user cannot answer.
-    if (data.mode === "session") request.mode = "session";
+    if (session) request.mode = "session";
     if (request.url) navigate(request.url);
     opts.picker.startReview(request);
   }

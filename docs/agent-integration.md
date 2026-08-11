@@ -68,11 +68,12 @@ agent                bridge                    page (embed/extension)
   │ request_review ──▶ hold the call open
   │                    └─▶ SSE: "review requested: hero section"
   │                                   │  the plugin ACTIVATES ITSELF:
-  │                                   │  review banner + armed picker —
-  │                                   │  the human never hunts for the
+  │                                   │  the notes panel opens on the
+  │                                   │  agent's question, picker armed
+  │                                   │  — the human never hunts for the
   │                                   │  chip. They click around, drop
-  │                                   │  notes, press Approve /
-  │                                   │  Request changes
+  │                                   │  notes, and press Approve /
+  │                                   │  Request changes under them
   │                    ◀── verdict + entries
   │ ◀── tool result: { verdict, entries[], durationMs }
   ▼
@@ -114,7 +115,7 @@ Engineering notes:
 
 ## Sessions — the human-led mode
 
-A **session** is the same held call wearing a different banner. The agent is
+A **session** is the same held call asking a different question. The agent is
 not asking about a change it just made; it is standing by while the human
 walks their own UI and points at whatever they find. The page says a session
 is running and shows exactly **one** button — Submit — and pressing it hands
@@ -137,8 +138,8 @@ per project, same timeout as a first-class outcome, same surface targeting,
 same audit record. On the wire it is `mode: "session"` on `POST /reviews`,
 echoed on `review-requested`; the verdict comes back as `submitted`. `mode` is
 stated only when it is *not* the default, so a page that has never heard of
-sessions is unaffected, and a mode a page cannot draw falls back to the review
-banner — a user must never be shown a question they cannot answer.
+sessions is unaffected, and a mode a page cannot draw falls back to a plain
+review — a user must never be shown a question they cannot answer.
 
 **Why a sibling tool rather than `request_review({mode})`.** Everything below
 the tool table is shared (it is one switch case). What is not shared is the
@@ -217,10 +218,12 @@ extension alike):
   subscription (a page that never sees one is talking to an older bridge and
   can only be reached by untargeted reviews) — `review-requested`
   `{ reviewId, prompt, url?, timeoutSeconds, mode? }` — the plugin activates
-  itself, banner up, picker armed, navigating/anchoring to `url` when given;
+  itself, notes panel open on the prompt, picker armed, navigating/anchoring
+  to `url` when given;
   `mode` is `"session"` or absent (see "Sessions"), and a mode the page does
   not recognise is drawn as a review — `review-cancelled` `{ reviewId }`
-  (timeout or agent abort; stand the banner down) — and `inbox-changed`
+  (timeout or agent abort; take the request out of the panel) — and
+  `inbox-changed`
   `{ project }`, sent to every surface of a project whenever its inbox really
   changes, by any route or tool. It is a "look again", not a diff: the page
   re-reads `GET /entries` and repaints its badge (and its panel, if one is
@@ -250,7 +253,7 @@ extension alike):
   restarts, or the human presses Esc, which the client sends as
   `notifications/cancelled`. Either ends the review immediately —
   `review-cancelled` goes to the page and the project is free for the next
-  `request_review`, rather than sitting `busy` with the banner up until
+  `request_review`, rather than sitting `busy` with the page still asking until
   `timeoutSeconds` expires.
 
 ## Claude Code specifics
@@ -328,7 +331,7 @@ things bound that, and none of them is CORS:
   with no token is simply bridge-less for the review direction, which is a
   fine place to be. `POST /reviews` stays open: a proxy instance in another
   project's cwd posts it and has no way to read the daemon's token file.
-  That also means any page can call it: it can raise a review banner on your
+  That also means any page can call it: it can raise a review on your
   page carrying prompt text of its choosing — rendered as text, not HTML, so
   it cannot inject markup, but aimed at you, the human — and hold the project
   `busy` for up to the review timeout (default 600s), so your agent's own

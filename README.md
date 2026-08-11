@@ -27,6 +27,14 @@ https://raw.githubusercontent.com/hulbu/fix-ui/main/prompt.md
 Your agent reads that page, installs, wires your framework, and verifies the
 picker appears before calling it done. Prefer to do it yourself? `npx fixui init`.
 
+## How to ask for it
+
+Point at something, describe what should change — then say one of two things:
+
+- **`fix ui`** — the agent works through the notes you have already left.
+- **`start a fix ui session`** — the agent stands by while you walk the UI,
+  fixes each batch you submit, and waits again.
+
 ## The loop
 
 ```
@@ -48,8 +56,8 @@ Two activation directions, non-negotiable in every adapter:
   pick elements, write notes — then the agent solves them, either because
   you say `fix ui` or because a file-watcher wakes it.
 - **Agent-initiated:** the agent calls `request_review` and the plugin
-  **activates itself** on the page — review banner up, picker armed, no
-  hunting for the chip. The agent blocks until you approve or request
+  **activates itself** on the page — the notes panel opens with the
+  agent's question in it, picker armed, no hunting for the chip. The agent blocks until you approve or request
   changes. Human-in-the-loop, started by the machine.
 - **A session** is the same channel, human-led: say *"start a fix ui
   session"* and the agent calls `start_fix_ui_session`, the page arms itself

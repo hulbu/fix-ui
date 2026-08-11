@@ -584,7 +584,20 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
   api.route("POST", "/reviews", async (ctx) => {
     const body = await readJsonRecord(ctx.req);
     if (!body) return ctx.json(400, { ok: false, error: "expected a JSON object body" });
-    if (!isFilledString(body.prompt)) {
+
+    // Read first, because it decides whether a prompt is required at all.
+    // Refused rather than defaulted: a mode nobody recognises means the caller
+    // wanted a mode this bridge cannot raise, and quietly giving it the other
+    // one would put the wrong buttons in front of the human.
+    const mode = body.mode;
+    if (mode !== undefined && mode !== "review" && mode !== "session") {
+      return ctx.json(400, { ok: false, error: 'mode must be "review" or "session"' });
+    }
+
+    // A review is a question, so it must contain one. A session is not: its
+    // panel shows a fixed instruction and the agent reports in the terminal, so
+    // there is nothing for a prompt to do and nothing to demand.
+    if (mode !== "session" && !isFilledString(body.prompt)) {
       return ctx.json(400, { ok: false, error: "review requires a non-empty prompt" });
     }
 
@@ -604,14 +617,6 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
       });
     }
 
-    // Refused rather than defaulted: a mode nobody recognises means the caller
-    // wanted a banner this bridge cannot raise, and quietly giving it the other
-    // one would put the wrong buttons in front of the human.
-    const mode = body.mode;
-    if (mode !== undefined && mode !== "review" && mode !== "session") {
-      return ctx.json(400, { ok: false, error: 'mode must be "review" or "session"' });
-    }
-
     const project = resolveProject(body.project, api.defaultProject);
     if (!project) return ctx.json(400, { ok: false, error: INVALID_PROJECT });
 
@@ -627,7 +632,7 @@ export function createBridgeServer(opts: BridgeServerOptions): BridgeServer {
     try {
       outcome = await broker.requestReview({
         project,
-        prompt: body.prompt,
+        prompt: isFilledString(body.prompt) ? body.prompt : "",
         ...(typeof body.url === "string" ? { url: body.url } : {}),
         ...(surfaceId === undefined ? {} : { surfaceId: surfaceId.slice(0, MAX_SURFACE_ID) }),
         ...(mode === "session" ? { mode } : {}),

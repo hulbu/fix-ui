@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ConsoleError, FeedbackEntry } from "./entry.js";
-import { createPicker, type Picker, type PickerOptions, type ReviewVerdict } from "./picker.js";
+import {
+  createPicker,
+  SESSION_INSTRUCTION,
+  type Picker,
+  type PickerOptions,
+  type ReviewVerdict,
+} from "./picker.js";
 import type { Transport } from "./transport.js";
 
 const NS = "data-uifb";
-const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast],[${NS}-banner]`;
+const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast]`;
 
 type FakeTransport = Transport & { created: FeedbackEntry[]; listed: FeedbackEntry[] };
 
@@ -204,6 +210,30 @@ async function openPanel(): Promise<HTMLElement> {
   return query(`[${NS}-panel]`)!;
 }
 
+/** The open panel — where a session or a review lives now. */
+function panel(): HTMLElement | null {
+  return query(`[${NS}-panel]`);
+}
+
+/**
+ * The declarations of the rule whose selector list is EXACTLY `selector`.
+ *
+ * Layout assertions belong here rather than on a measured offset: jsdom lays
+ * nothing out, and a pixel expectation would only re-state whatever font the
+ * runner happened to have. What is actually being claimed is that the box
+ * centres its own content — which is a property of these declarations.
+ */
+function ruleFor(selector: string, root: ParentNode = document.head): string {
+  // Comments carry the reasoning for most of these rules, and a comment sits
+  // between the previous `}` and the selector it explains.
+  const sheet = root.querySelector(`style[${NS}]`)!.textContent!.replace(/\/\*[\s\S]*?\*\//g, "");
+  const match = [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+    ([, selectors]) => selectors!.trim().replace(/\s+/g, " ") === selector,
+  );
+  if (!match) throw new Error(`no rule for ${selector}`);
+  return match[2]!.replace(/\s+/g, "");
+}
+
 /** Toasts stack — the newest one is the reply to what just happened. */
 function lastToast(): string {
   const all = document.querySelectorAll(`[${NS}-toast]`);
@@ -358,35 +388,41 @@ describe("createPicker", () => {
     expect(document.querySelectorAll(UI).length).toBe(0);
   });
 
-  it("startReview shows the banner with the prompt; Approve triggers onVerdict with entryIds of entries saved during the review", async () => {
+  it("startReview opens the panel with the prompt; Approve triggers onVerdict with entryIds of entries saved during the review", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const transport = fakeTransport();
     const picker = make({ transport });
     const verdicts: ReviewVerdict[] = [];
     picker.onVerdict((v) => verdicts.push(v));
 
+    expect(panel()).toBeNull();
     picker.startReview({ reviewId: "rev-1", prompt: "Review the new pricing table" });
 
-    const banner = query(`[${NS}-banner]`);
-    expect(banner).not.toBeNull();
-    expect(banner!.textContent).toContain("Review the new pricing table");
+    // The panel opens itself: the human is not asked to find it.
+    const open = panel()!;
+    expect(open).not.toBeNull();
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toContain(
+      "Review the new pricing table",
+    );
     expect(picker.active).toBe(true); // the agent's flow arms the picker itself
 
     clickSequence(query("#cta")!);
     await typeAndSave("tighten the spacing");
 
-    humanClick(banner!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
 
     expect(verdicts).toEqual([
       { reviewId: "rev-1", verdict: "approved", entryIds: [transport.created[0]!.id] },
     ]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    // The request is answered and gone; the notes it produced are not.
+    expect(query(`[${NS}-agent]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
   });
 
   /**
    * Mechanic 2 re-homes the picker's UI into the page's own modal dialog while
-   * one is open, which puts the banner in the page's light DOM — findable, and
+   * one is open, which puts the panel in the page's light DOM — findable, and
    * `.click()`-able, by page script. `isTrusted` is the browser's own word for
    * "a person did this", and it is the one bit script cannot forge, so a
    * synthesized Approve must resolve nothing: the human-in-the-loop guarantee
@@ -399,20 +435,20 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "rev-1", prompt: "Review the new pricing table" });
-    const banner = query(`[${NS}-banner]`)!;
+    const open = panel()!;
 
     // Exactly what a hostile page can do: find the button, click it.
-    banner.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!.click();
-    banner.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!.click();
-    banner
+    open.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!.click();
+    open.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!.click();
+    open
       .querySelector<HTMLButtonElement>(`[${NS}-approve]`)!
       .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(verdicts).toEqual([]);
-    expect(query(`[${NS}-banner]`)).not.toBeNull(); // still waiting for the human
+    expect(query(`[${NS}-agent]`)).not.toBeNull(); // still waiting for the human
 
     // And the human's own click still works.
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(open.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
     expect(verdicts).toEqual([{ reviewId: "rev-1", verdict: "approved", entryIds: [] }]);
   });
 
@@ -455,9 +491,9 @@ describe("createPicker", () => {
 
     // The stream came back and the bridge replayed the pending review.
     picker.startReview({ reviewId: "rev-1", prompt: "Review the pricing table" });
-    expect(query(`[${NS}-banner]`)!.textContent).toContain("Review the pricing table");
+    expect(query(`[${NS}-agent]`)!.textContent).toContain("Review the pricing table");
 
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-changes]`)!);
     expect(verdicts).toEqual([
       { reviewId: "rev-1", verdict: "changes", entryIds: [transport.created[0]!.id] },
     ]);
@@ -475,20 +511,23 @@ describe("createPicker", () => {
     await typeAndSave("a note for the first review");
 
     picker.startReview({ reviewId: "rev-2", prompt: "Second" });
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-approve]`)!);
 
     expect(verdicts).toEqual([{ reviewId: "rev-2", verdict: "approved", entryIds: [] }]);
   });
 
-  it("endReview() stands the banner down without a verdict", () => {
+  it("endReview() takes the request out of the panel without a verdict", () => {
     const picker = make({ transport: fakeTransport() });
     const onVerdict = vi.fn();
     picker.onVerdict(onVerdict);
 
     picker.startReview({ reviewId: "rev-2", prompt: "Check the header" });
+    expect(query(`[${NS}-agent]`)).not.toBeNull();
+
     picker.endReview();
 
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-agent]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
     expect(onVerdict).not.toHaveBeenCalled();
   });
@@ -563,7 +602,7 @@ describe("createPicker", () => {
 
   // ── Session mode (human-in-the-loop, batched) ─────────────────────────────
 
-  it("a session banner arms the picker and offers Submit — not Approve/Request changes", async () => {
+  it("a session opens the panel, arms the picker and offers Submit — not Approve/Request changes", async () => {
     document.body.innerHTML = `<button id="cta">Continue</button>`;
     const transport = fakeTransport();
     const picker = make({ transport });
@@ -572,22 +611,36 @@ describe("createPicker", () => {
 
     picker.startReview({ reviewId: "ses-1", prompt: "Fix-UI session", mode: "session" });
 
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner).not.toBeNull();
-    expect(banner.textContent).toContain("Fix-UI session");
+    const open = panel()!;
+    expect(open).not.toBeNull();
+    // The panel says how to drive it, and nothing the agent typed.
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    expect(open.textContent).not.toContain("Fix-UI session");
     expect(picker.active).toBe(true);
     // One button, and it is the one the user is looking for.
-    expect(banner.querySelectorAll("button").length).toBe(1);
-    expect(banner.querySelector(`[${NS}-submit]`)!.textContent).toBe("Submit");
-    expect(banner.querySelector(`[${NS}-approve]`)).toBeNull();
-    expect(banner.querySelector(`[${NS}-changes]`)).toBeNull();
+    const actions = open.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelectorAll("button").length).toBe(1);
+    expect(actions.querySelector(`[${NS}-submit]`)!.textContent).toBe("Submit");
+    expect(actions.querySelector(`[${NS}-approve]`)).toBeNull();
+    expect(actions.querySelector(`[${NS}-changes]`)).toBeNull();
 
     clickSequence(query("#cta")!);
     await typeAndSave("the CTA is the wrong orange");
     clickSequence(query("#cta")!);
     await typeAndSave("and it is too small");
 
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    // Still the same panel, and the notes are listed ABOVE the button that
+    // hands them over — which is the whole reason the two are one surface now.
+    expect(panel()).toBe(open);
+    const rows = [...open.querySelectorAll(`[${NS}-row]`)];
+    expect(rows.length).toBe(2);
+    const submit = open.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
+    expect(
+      rows[1]!.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    humanClick(submit);
 
     expect(verdicts).toEqual([
       {
@@ -596,8 +649,57 @@ describe("createPicker", () => {
         entryIds: transport.created.map((entry) => entry.id),
       },
     ]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
     expect(picker.active).toBe(false);
+  });
+
+  /**
+   * ★ The page is the tool; the terminal is the conversation.
+   *
+   * The reported case, verbatim: the agent passed its account of the last batch
+   * as the session prompt, and a 290px floating control turned into a message
+   * surface restating prose the human had already read in the terminal. A
+   * session's panel is an instruction and nothing else.
+   */
+  it("a session never renders the agent's prose, whatever it passed", () => {
+    const prose =
+      "Changed the Get started button to yellow (and switched its text to dark for contrast, " +
+      "since white on yellow was hard to read). Still standing by for more notes.";
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-p", prompt: prose, mode: "session" });
+
+    const open = panel()!;
+    expect(open.textContent).not.toContain("Get started");
+    expect(open.textContent).not.toContain("Still standing by");
+    expect(open.querySelector(`[${NS}-agent]`)).toBeNull();
+    // What it says instead — one line, and it names the button it sits above.
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+  });
+
+  /** …so a session has no use for a prompt, and must not need one. */
+  it("a session with no prompt at all still says what to do", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-np", mode: "session" });
+
+    expect(panel()!.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(panel()!.querySelector(`[${NS}-agent]`)).toBeNull();
+  });
+
+  /**
+   * The other half of the same rule: a review IS a question, and the human
+   * cannot answer one they cannot read. This is the one place agent text
+   * belongs on the page.
+   */
+  it("a review still renders the agent's prompt, and no session instruction", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "rev-p", prompt: "Made the CTA full-width — does it crowd?" });
+
+    const open = panel()!;
+    expect(open.querySelector(`[${NS}-agent]`)!.textContent).toBe(
+      "Made the CTA full-width — does it crowd?",
+    );
+    expect(open.querySelector(`[${NS}-instruction]`)).toBeNull();
   });
 
   /** "Nothing wrong, carry on" is a legitimate answer, and it must not hang. */
@@ -607,10 +709,10 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "ses-2", prompt: "Anything to fix?", mode: "session" });
-    humanClick(query(`[${NS}-banner]`)!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    humanClick(panel()!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
 
     expect(verdicts).toEqual([{ reviewId: "ses-2", verdict: "submitted", entryIds: [] }]);
-    expect(query(`[${NS}-banner]`)).toBeNull();
+    expect(query(`[${NS}-actions]`)).toBeNull();
   });
 
   /** Submit is a decision a human has to make, so it carries the same guard the
@@ -621,14 +723,13 @@ describe("createPicker", () => {
     picker.onVerdict((v) => verdicts.push(v));
 
     picker.startReview({ reviewId: "ses-3", prompt: "Session", mode: "session" });
-    const banner = query(`[${NS}-banner]`)!;
-    const submit = banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
+    const submit = panel()!.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!;
 
     submit.click();
     submit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(verdicts).toEqual([]);
-    expect(query(`[${NS}-banner]`)).not.toBeNull();
+    expect(query(`[${NS}-instruction]`)).not.toBeNull(); // still standing by
 
     humanClick(submit);
     expect(verdicts).toEqual([{ reviewId: "ses-3", verdict: "submitted", entryIds: [] }]);
@@ -648,10 +749,10 @@ describe("createPicker", () => {
     await typeAndSave("tighten the spacing");
 
     picker.startReview({ reviewId: "ses-4", prompt: "Session", mode: "session" });
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner.querySelectorAll("button").length).toBe(1);
+    const actions = panel()!.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelectorAll("button").length).toBe(1);
 
-    humanClick(banner.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
+    humanClick(actions.querySelector<HTMLButtonElement>(`[${NS}-submit]`)!);
     expect(verdicts).toEqual([
       { reviewId: "ses-4", verdict: "submitted", entryIds: [transport.created[0]!.id] },
     ]);
@@ -663,10 +764,10 @@ describe("createPicker", () => {
     picker.startReview({ reviewId: "ses-5", prompt: "Session", mode: "session" });
     picker.startReview({ reviewId: "rev-9", prompt: "Review" });
 
-    const banner = query(`[${NS}-banner]`)!;
-    expect(banner.querySelector(`[${NS}-submit]`)).toBeNull();
-    expect(banner.querySelector(`[${NS}-approve]`)).not.toBeNull();
-    expect(banner.querySelector(`[${NS}-changes]`)).not.toBeNull();
+    const actions = panel()!.querySelector(`[${NS}-actions]`)!;
+    expect(actions.querySelector(`[${NS}-submit]`)).toBeNull();
+    expect(actions.querySelector(`[${NS}-approve]`)).not.toBeNull();
+    expect(actions.querySelector(`[${NS}-changes]`)).not.toBeNull();
   });
 
   it("a rejected create is reported as an error, not as a save", async () => {
@@ -1417,10 +1518,10 @@ describe("the crosshair while armed", () => {
     expect(armedCursor(`[${NS}-drag] *`)).toBe("grab!important");
     expect(armedCursor(`[${NS}-panel][${NS}-dragging] [${NS}-drag]`)).toBe("grabbing!important");
 
-    // Every button the picker draws.
+    // Every button the picker draws. The verdict buttons live in the panel
+    // now, so `[panel] button` is what covers them — there is no third surface.
     expect(armedCursor(`[${NS}-panel] button`)).toBe("pointer!important");
     expect(armedCursor(`[${NS}-pop] button`)).toBe("pointer!important");
-    expect(armedCursor(`[${NS}-banner] button`)).toBe("pointer!important");
     // …except the one that cannot be pressed: an empty note is not a note.
     expect(armedCursor(`[${NS}-pop] button[disabled]`)).toBe("default!important");
 
@@ -1428,7 +1529,7 @@ describe("the crosshair while armed", () => {
     expect(armedCursor(`[${NS}-pop] textarea`)).toBe("text!important");
 
     // The picker's surfaces are not pick targets: no crosshair on them.
-    for (const surface of [`[${NS}-panel]`, `[${NS}-pop]`, `[${NS}-banner]`, `[${NS}-toast]`]) {
+    for (const surface of [`[${NS}-panel]`, `[${NS}-pop]`, `[${NS}-toast]`]) {
       expect(armedCursor(surface)).toBe("default!important");
     }
   });
@@ -1477,5 +1578,436 @@ describe("the crosshair while armed", () => {
     picker.destroy();
     live.pop();
     expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+  });
+});
+
+/**
+ * The ink a drawn mark actually paints, in viewBox units.
+ *
+ * jsdom has no `getBBox` and lays nothing out — but it does not need to. Every
+ * mark the picker draws is absolute `M x y L x y` points, so the extremes ARE
+ * the points, grown by half a stroke width at each end because the caps and
+ * joins are round. That is the same arithmetic the browser does, and it is
+ * what lets "is this mark symmetric?" be a unit test rather than a screenshot.
+ */
+function inkOf(svg: SVGSVGElement): { x: [number, number]; y: [number, number]; box: number } {
+  const paths = [...svg.querySelectorAll("path")];
+  expect(paths.length).toBeGreaterThan(0);
+  const half = Number(paths[0]!.getAttribute("stroke-width")) / 2;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const path of paths) {
+    const d = path.getAttribute("d")!;
+    // The parser above is only honest for this one shape of path data — so the
+    // shape is asserted rather than assumed.
+    expect(d).toMatch(/^(?:[ML]\s*-?[\d.]+\s+-?[\d.]+\s*)+$/);
+    // Round caps and joins alike: the outline is the path grown uniformly.
+    expect(path.getAttribute("stroke-linecap")).toBe("round");
+    expect(path.getAttribute("stroke-linejoin")).toBe("round");
+    // A filled path's ink would be its interior, not its outline.
+    expect(path.getAttribute("fill")).toBe("none");
+    expect(Number(path.getAttribute("stroke-width"))).toBe(half * 2);
+    const nums = d.match(/-?[\d.]+/g)!.map(Number);
+    for (let i = 0; i < nums.length; i += 2) {
+      xs.push(nums[i]!);
+      ys.push(nums[i + 1]!);
+    }
+  }
+  const [minX, minY, width, height] = svg.getAttribute("viewBox")!.split(/\s+/).map(Number);
+  // A square viewBox starting at the origin, drawn at its own size: one user
+  // unit is one CSS pixel, so these numbers are the pixels the browser paints.
+  expect([minX, minY]).toEqual([0, 0]);
+  expect(width).toBe(height);
+  expect(svg.getAttribute("width")).toBe(String(width));
+  expect(svg.getAttribute("height")).toBe(String(height));
+  return {
+    x: [Math.min(...xs) - half, Math.max(...xs) + half],
+    y: [Math.min(...ys) - half, Math.max(...ys) + half],
+    box: width!,
+  };
+}
+
+/** The mark is symmetric about its own box on both axes — to the arithmetic. */
+function expectMarkCentred(svg: SVGSVGElement): void {
+  const ink = inkOf(svg);
+  expect((ink.x[0] + ink.x[1]) / 2).toBeCloseTo(ink.box / 2, 6);
+  expect((ink.y[0] + ink.y[1]) / 2).toBeCloseTo(ink.box / 2, 6);
+  // …and it fills the box rather than rattling around inside it.
+  expect(ink.x[1] - ink.x[0]).toBeGreaterThan(ink.box * 0.5);
+}
+
+/**
+ * The chip is a fixed 44px circle carrying one glyph, and U+271B's own metrics
+ * are asymmetric — a `<button>`'s default alignment therefore lands it visibly
+ * off-centre. The fix has to be LAYOUT (a flex box centring its own content),
+ * not a padding nudge or a magic offset: those are tuned against one font
+ * stack and break on the next one, and a host page can change the font stack
+ * under us at any time.
+ */
+describe("the chip centres its glyph by layout", () => {
+  it("makes the chip a flex box that centres on both axes, with nothing nudged", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+
+    const chip = ruleFor(`[${NS}-chip]`);
+    expect(chip).toContain("display:flex");
+    expect(chip).toContain("align-items:center");
+    expect(chip).toContain("justify-content:center");
+
+    // Not a fudge factor: nothing here shifts the glyph on one axis only,
+    // which is exactly what would drift on a different font stack.
+    for (const nudge of ["text-indent", "padding-left", "padding-top", "transform"]) {
+      expect(chip).not.toContain(nudge);
+    }
+
+    // …and the glyph's own line box is exactly its content, so the flex box
+    // has a symmetric thing to centre in the first place.
+    const glyph = ruleFor(`[${NS}-glyph]`);
+    expect(glyph).toContain("line-height:1");
+    expect(glyph).not.toMatch(/margin|position|top:|left:|transform/);
+  });
+
+  it("leaves the badge out of the flex flow entirely", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+
+    // Absolutely positioned children are not flex items: the chip becoming a
+    // flex container cannot move the count, and its offsets stay what they were.
+    const badge = ruleFor(`[${NS}-badge]`);
+    expect(badge).toContain("position:absolute");
+    expect(badge).toContain("top:-5px");
+    expect(badge).toContain("right:-5px");
+
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    // And it is still the chip's own child, beside the glyph rather than in it.
+    const chip = query(`[${NS}-chip]`)!;
+    expect(query(`[${NS}-badge]`)!.parentElement).toBe(chip);
+    expect(query(`[${NS}-glyph]`)!.contains(query(`[${NS}-badge]`))).toBe(false);
+  });
+
+  /** The same question, asked of the other two marks the picker draws. */
+  it("centres the panel's minimize chevron and its grip by layout too", async () => {
+    make({ transport: fakeTransport() });
+    const open = await openPanel();
+
+    const minimize = ruleFor(`[${NS}-min]`);
+    expect(minimize).toContain("display:flex");
+    expect(minimize).toContain("align-items:center");
+    expect(minimize).toContain("justify-content:center");
+
+    // The grip is a background image on a fixed box — symmetric by
+    // construction — and the header centres it vertically for the same reason
+    // the chip centres its glyph.
+    expect(ruleFor(`[${NS}-grip]`)).toContain("flex:none");
+    expect(ruleFor(`[${NS}-head]`)).toContain("align-items:center");
+
+    // No stray text nodes in either: a space would be a glyph off-centre.
+    expect(open.querySelector(`[${NS}-grip]`)!.textContent).toBe("");
+    expect(open.querySelector(`[${NS}-min]`)!.textContent).toBe("");
+  });
+});
+
+/**
+ * The same defect, found twice: a glyph in a fixed-size box centred by a
+ * `font:.../<px>` line-height. That lands only when the glyph's own ink is
+ * symmetric about the baseline — U+271B's is not (the chip), and U+00D7's is
+ * not either (the delete button, which rendered its cross high AND, because a
+ * host page's `button{padding}` cascaded straight into it, in a 28x22 oval
+ * rather than the 22px disc its CSS claimed).
+ *
+ * So the mechanism is the assertion here: a flex box centring its own content,
+ * a box that is the size it says it is, and — for anything that is an icon
+ * rather than the product's own mark — a path the picker draws itself, whose
+ * ink is symmetric by construction instead of by luck of the font stack. The
+ * e2e suite measures the result in a real browser; this is the mechanism that
+ * makes the measurement come out right.
+ */
+describe("every mark is centred by layout, never by line-height", () => {
+  /** The whole point: the pattern must not exist anywhere in the sheet. */
+  it("centres nothing anywhere with a pixel line-height", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const sheet = document.head
+      .querySelector(`style[${NS}]`)!
+      .textContent!.replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // `font:600 13px/22px system-ui` in a 22px box is the bug, twice over. A
+    // ratio line-height (`14px/1.4`) is ordinary running text and stays.
+    expect(sheet).not.toMatch(/font:[^;}]*\/\s*\d+(\.\d+)?px/);
+    expect(sheet).toMatch(/font:\d+px\/1\.4/); // …the running text is still there
+  });
+
+  it("gives the delete button a drawn cross in a disc a host page cannot deform", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport, accent: ACCENT });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note to delete");
+    picker.disable();
+    transport.listed.push(transport.created[0]!); // the inbox has it now
+
+    const del = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-del]`)!;
+    expect(del).not.toBeNull();
+
+    const rule = ruleFor(`[${NS}-del]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    // The disc is the size it claims regardless of the page's own button CSS:
+    // border-box plus no padding of its own is what makes 22px mean 22px.
+    expect(rule).toContain("box-sizing:border-box");
+    expect(rule).toContain("padding:0");
+    // The hit area never shrank: pinning the box down removes the width a host
+    // page's button padding was accidentally adding, so the declared size goes
+    // up to cover it — and 24px is WCAG 2.2's floor for a target like this.
+    expect(rule).toContain("width:24px");
+    expect(rule).toContain("height:24px");
+    expect(rule).not.toMatch(/width:(?!24px)|height:(?!24px)/);
+    // Nothing tuned against one font stack, and no line-height doing the work.
+    expect(rule).not.toMatch(/font:|line-height|text-indent|transform|vertical-align/);
+
+    // Not U+00D7 any more, and not any other character: a drawn mark.
+    expect(del.textContent).toBe("");
+    expect(del.getAttribute("aria-label")).toBe("Delete note");
+    const mark = del.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+  });
+
+  it("makes the Pick button a row that centres its mark against its label", async () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const pick = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-pick]`)!;
+
+    const rule = ruleFor(`[${NS}-pick]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    expect(rule).toContain("box-sizing:border-box");
+    // A gap, not a space character: the space between a glyph and its label
+    // was whatever the font said it was.
+    expect(rule).toMatch(/gap:\d+px/);
+
+    // The mark is an element beside the label, not a character in front of it
+    // — so a screen reader is not asked to pronounce it.
+    const mark = pick.querySelector("svg")!;
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(pick.textContent).toBe("Pick an element");
+    expect(pick.textContent).not.toContain("✛");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+  });
+
+  it("draws the minimize chevron symmetric about its own box", async () => {
+    make({ transport: fakeTransport() });
+    const min = (await openPanel()).querySelector<HTMLButtonElement>(`[${NS}-min]`)!;
+
+    expect(ruleFor(`[${NS}-min]`)).toContain("box-sizing:border-box");
+    const mark = min.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    // The chevron's points are 5.25 and 8.75, not 5.5 and 9: the round cap
+    // grows the ink 0.9 at each end, and the old pair put the result 0.25
+    // below the centre of the box drawing it.
+    expectMarkCentred(mark as unknown as SVGSVGElement);
+
+    // Minimizing still flips the same mark rather than swapping in a second.
+    expect(ruleFor(`[${NS}-panel][${NS}-minimized] [${NS}-min] svg`)).toContain(
+      "transform:rotate(180deg)",
+    );
+  });
+
+  it("puts every drawn mark on its own baseline-free block", () => {
+    make({ transport: fakeTransport() });
+    const rule = ruleFor(`[${NS}-mark]`);
+    // An inline SVG sits on the text baseline — the one thing a flex box
+    // centring its own content must not be handed.
+    expect(rule).toContain("display:block");
+    // …and in the Pick button's row it must not be squeezed by the label.
+    expect(rule).toContain("flex:none");
+  });
+
+  it("centres the badge's count in a disc that is actually round", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note");
+
+    const rule = ruleFor(`[${NS}-badge]`);
+    expect(rule).toContain("display:flex");
+    expect(rule).toContain("align-items:center");
+    expect(rule).toContain("justify-content:center");
+    expect(rule).toContain("line-height:1");
+    // `min-width:19px` next to `padding:0 4px` under content-box was measuring
+    // the padding on top of the floor — a one-digit count came out 27x19.
+    expect(rule).toContain("box-sizing:border-box");
+    expect(rule).toContain("min-width:19px");
+    expect(rule).toContain("height:19px");
+    // The padding stays: it is what a three-digit count grows by.
+    expect(rule).toContain("padding:04px");
+    // The count is still a count, and still out of the chip's flex flow.
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    expect(rule).toContain("position:absolute");
+  });
+
+  it("draws every mark with no dependency, no icon font and no emoji", async () => {
+    make({ transport: fakeTransport() });
+    const open = await openPanel();
+    const marks = [...open.querySelectorAll<SVGSVGElement>(`svg[${NS}-mark]`)];
+    // The Pick button and the minimize chevron, at least.
+    expect(marks.length).toBeGreaterThanOrEqual(2);
+    for (const mark of marks) {
+      expectMarkCentred(mark);
+      // `currentColor` throughout: a mark inherits the state its control is in
+      // (the delete button inverts on hover) rather than restating a colour.
+      for (const path of mark.querySelectorAll("path")) {
+        expect(path.getAttribute("stroke")).toBe("currentColor");
+      }
+      // Drawn in the document's own namespace, from nothing but path data.
+      expect(mark.namespaceURI).toBe("http://www.w3.org/2000/svg");
+      expect(mark.querySelectorAll("image, use, foreignObject, text")).toHaveLength(0);
+    }
+  });
+});
+
+/**
+ * The session/review banner used to be a third floating element — 660px of
+ * dark bar across the top of somebody's app, next to the chip and next to the
+ * panel it duplicated. It is the notes panel now: the agent's prompt is the
+ * panel's header area, and the verdict buttons sit under the notes they act on.
+ * The panel is still draggable, still minimizable, and still re-homes into an
+ * open modal.
+ */
+describe("the agent's request lives in the notes panel", () => {
+  it("has no banner element or banner styling left anywhere", () => {
+    const picker = make({ transport: fakeTransport(), accent: ACCENT });
+    picker.startReview({ reviewId: "rev-1", prompt: "Look at the header", mode: "session" });
+
+    expect(document.querySelector(`[${NS}-banner]`)).toBeNull();
+    for (const sheet of document.querySelectorAll(`style[${NS}]`)) {
+      expect(sheet.textContent).not.toContain(`${NS}-banner`);
+    }
+  });
+
+  it("opens the panel by itself and un-folds it so the prompt is readable", async () => {
+    const picker = make({ transport: fakeTransport() });
+
+    // The user left it minimized last time they used it.
+    const open = await openPanel();
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+    expect(open.hasAttribute(`${NS}-minimized`)).toBe(true);
+    query(`[${NS}-chip]`)!.click(); // …and then closed it entirely
+    expect(panel()).toBeNull();
+
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const reopened = panel()!;
+    expect(reopened).not.toBeNull();
+    expect(reopened.hasAttribute(`${NS}-minimized`)).toBe(false);
+    expect(reopened.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(reopened.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // One primary action while an agent is waiting, and it is Submit — the
+    // marker the quieter Pick button hangs off.
+    expect(reopened.hasAttribute(`${NS}-req`)).toBe(true);
+    expect(ruleFor(`[${NS}-panel][${NS}-req] [${NS}-pick]`)).toContain("background:#00000010");
+
+    picker.endReview();
+    expect(reopened.hasAttribute(`${NS}-req`)).toBe(false);
+  });
+
+  /** Losing the state behind a collapse is the failure mode to avoid. */
+  it("keeps a live session obvious while the panel is minimized", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+
+    expect(open.hasAttribute(`${NS}-minimized`)).toBe(true);
+    // The body is folded away — instruction and Submit with it…
+    expect(open.querySelector(`[${NS}-instruction]`)).toBeNull();
+    expect(open.querySelector(`[${NS}-actions]`)).toBeNull();
+    // …but the header still says a session is running, in words and in a mark.
+    expect(open.querySelector("h4")!.textContent).toBe("Session running");
+    expect(open.querySelector(`[${NS}-live]`)).not.toBeNull();
+    // …and the chip is still pulsing, because the picker is still armed.
+    expect(picker.active).toBe(true);
+    expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
+
+    // Restoring brings the whole request back.
+    open.querySelector<HTMLButtonElement>(`[${NS}-min]`)!.click();
+    expect(open.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // A review says the other thing, and says it the same way.
+    picker.startReview({ reviewId: "rev-2", prompt: "Check the header" });
+    expect(panel()!.querySelector("h4")!.textContent).toBe("Review requested");
+    expect(panel()!.querySelector(`[${NS}-live]`)).not.toBeNull();
+  });
+
+  /** The live mark is motion; the people who turned motion off still get it. */
+  it("stills the live mark under reduced motion rather than removing it", () => {
+    make({ transport: fakeTransport(), accent: ACCENT });
+    const sheet = document.head.querySelector(`style[${NS}]`)!.textContent!;
+    const reduced = sheet.slice(sheet.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain(`[${NS}-live]{animation:none;}`);
+    // …and the dot itself is a solid mark, not a thing that only exists in the
+    // animation's bright half.
+    expect(ruleFor(`[${NS}-live]`)).toContain(`background:${ACCENT}`);
+  });
+
+  /** Mechanic 2, with the merged surface: the request must be answerable from
+   *  inside the page's own modal, which is where the panel now has to be. */
+  it("re-homes into an open modal dialog while a session is running", async () => {
+    document.body.innerHTML = `<dialog id="modal">m</dialog>`;
+    const picker = make({ transport: fakeTransport() });
+
+    picker.startReview({ reviewId: "ses-1", prompt: "Check the modal", mode: "session" });
+    expect(panel()!.parentNode).toBe(document.body);
+
+    query("#modal")!.setAttribute("open", "");
+    await settle();
+
+    const moved = panel()!;
+    expect(moved.parentNode).toBe(query("#modal"));
+    expect(moved.querySelector(`[${NS}-instruction]`)!.textContent).toBe(SESSION_INSTRUCTION);
+    expect(moved.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    query("#modal")!.removeAttribute("open");
+    await settle();
+    expect(panel()!.parentNode).toBe(document.body);
+  });
+
+  /** Arming used to close the panel; a session lives in it, so it must not. */
+  it("keeps the panel open when the picker arms during a session", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    open.querySelector<HTMLButtonElement>(`[${NS}-pick]`)!.click();
+
+    expect(panel()).toBe(open);
+    expect(picker.active).toBe(true);
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
+
+    // With no session on, "Pick an element" still gets the panel out of the way.
+    picker.endReview();
+    panel()!.querySelector<HTMLButtonElement>(`[${NS}-pick]`)!.click();
+    expect(panel()).toBeNull();
+  });
+
+  /** The panel keeps its own manners: dragged where the user put it. */
+  it("stays draggable by its header while a session is running", () => {
+    const picker = make({ transport: fakeTransport() });
+    picker.startReview({ reviewId: "ses-1", prompt: "Anything to fix?", mode: "session" });
+
+    const open = panel()!;
+    dragFrom(open.querySelector<HTMLElement>(`[${NS}-drag]`)!, 200, 200, 320, 290);
+
+    expect(open.style.left).toBe("120px");
+    expect(open.style.top).toBe("90px");
+    expect(open.querySelector(`[${NS}-submit]`)).not.toBeNull();
   });
 });

@@ -1,10 +1,14 @@
 import {
+  AGENT,
   APPROVE,
   BADGE,
-  BANNER,
   CHANGES,
   CHIP,
+  INSTRUCTION,
+  LIVE,
+  MINIMIZE,
   PANEL,
+  SESSION_INSTRUCTION,
   SUBMIT,
   armPicker,
   expect,
@@ -92,6 +96,35 @@ test("a batch of resolves lands as one repaint, panel open", async ({ page, base
 });
 
 /**
+ * ★ The reported failure, in a real browser: the agent put its account of the
+ * last batch in the session's prompt, and the floating panel became a message
+ * surface restating prose the human had already read in the terminal.
+ *
+ * The prompt is posted here on purpose — a bridge cannot stop an agent sending
+ * one, so the page has to be the thing that refuses to draw it.
+ */
+test("a session panel never renders the agent's prose, even when it sends some", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
+  await openFixture(page, baseURL!, "basic.html", bridge);
+
+  const prose =
+    "Changed the Get started button to yellow (and switched its text to dark for contrast, " +
+    "since white on yellow was hard to read). Still standing by for more notes.";
+  requestReview(bridge, { prompt: prose, mode: "session" });
+
+  const panel = page.locator(PANEL);
+  await expect(panel.locator(INSTRUCTION)).toHaveText(SESSION_INSTRUCTION);
+  await expect(panel.locator(AGENT)).toHaveCount(0);
+  await expect(panel).not.toContainText("Get started");
+  await expect(panel).not.toContainText("Still standing by");
+  // …and the panel is still the session's: one Submit, and it works.
+  await expect(page.locator(SUBMIT)).toHaveText("Submit");
+});
+
+/**
  * ★ A session end to end. The test plays the agent — `POST /reviews` with
  * `mode:"session"` is what `start_fix_ui_session` posts — and the browser plays
  * the human, who leaves two notes and presses one button.
@@ -103,25 +136,36 @@ test("a session: one Submit button hands the whole batch to the held call", asyn
 }) => {
   await openFixture(page, baseURL!, "basic.html", bridge);
 
-  const session = requestReview(bridge, {
-    prompt: "Point at anything that needs fixing",
-    mode: "session",
-  });
+  // No prompt: a session takes none. The agent's account of the last batch is a
+  // terminal report, and putting it here is what this test exists to prevent.
+  const session = requestReview(bridge, { mode: "session" });
 
-  const banner = page.locator(BANNER);
-  await expect(banner).toContainText("Session running");
-  await expect(banner).toContainText("Point at anything that needs fixing");
-  // One button, and it is not a verdict — the session is not a yes-or-no.
-  await expect(banner.locator("button")).toHaveCount(1);
+  // The session IS the notes panel: it opened itself, its header says a session
+  // is running, and what it says is how to drive it — nothing the agent wrote.
+  const panel = page.locator(PANEL);
+  await expect(panel).toBeVisible();
+  await expect(panel.locator("h4")).toHaveText("Session running");
+  await expect(panel.locator(INSTRUCTION)).toHaveText(SESSION_INSTRUCTION);
+  await expect(panel.locator(AGENT)).toHaveCount(0);
+  await expect(panel.locator(LIVE)).toHaveCount(1);
+  // One action, and it is not a verdict — the session is not a yes-or-no.
+  await expect(panel.locator("[data-uifb-actions] button")).toHaveCount(1);
   await expect(page.locator(SUBMIT)).toHaveText("Submit");
   await expect(page.locator(APPROVE)).toHaveCount(0);
   await expect(page.locator(CHANGES)).toHaveCount(0);
+  // Nothing else is floating over the page — the banner is gone for good.
+  await expect(page.locator("[data-uifb-banner]")).toHaveCount(0);
   // The page armed itself, as a review does.
   expect(await page.evaluate(() => window.fixui.active)).toBe(true);
   expect(session.settled()).toBe(false);
 
   await pickAndNote(page, "#save-btn", "Primary button should be brand blue");
   await pickAndNote(page, "#cancel-btn", "Cancel reads as the primary action");
+
+  // The notes are listed in the same panel, above the button that hands them
+  // over — the whole reason the two surfaces became one.
+  await expect(panel.locator("[data-uifb-row]")).toHaveCount(2);
+  await expect(panel).toContainText("Primary button should be brand blue");
 
   await page.locator(SUBMIT).click();
 
@@ -131,16 +175,69 @@ test("a session: one Submit button hands the whole batch to the held call", asyn
     "Primary button should be brand blue",
     "Cancel reads as the primary action",
   ]);
-  await expect(banner).toHaveCount(0);
+  // The request is answered and gone; the panel is still there with the notes.
+  await expect(page.locator(INSTRUCTION)).toHaveCount(0);
+  await expect(page.locator(SUBMIT)).toHaveCount(0);
+  await expect(panel).toHaveCount(1);
 
   // The audit trail records a session the way it records a review.
   expect(await bridge.reviews()).toMatchObject([{ verdict: "submitted" }]);
 
-  // The next round starts on the same channel: sessions are a loop.
-  const second = requestReview(bridge, { prompt: "Anything else?", mode: "session" });
-  await expect(page.locator(BANNER)).toContainText("Anything else?");
+  // The next round starts on the same channel: sessions are a loop — and it
+  // says the same thing, because a session's panel always says the same thing.
+  const second = requestReview(bridge, { mode: "session" });
+  await expect(page.locator(INSTRUCTION)).toHaveText(SESSION_INSTRUCTION);
 
   // …and ending one without a note is a real answer, not a hang.
   await page.locator(SUBMIT).click();
   expect(await second.outcome).toMatchObject({ verdict: "submitted", entries: [] });
+});
+
+/**
+ * ★ The failure mode the merge could have introduced: folding the panel away
+ * takes the session with it, and the human is left on an armed page with no
+ * idea an agent is blocked on them. So the collapsed header has to keep saying
+ * it — in words and in a mark — and the chip has to keep saying it too.
+ */
+test("a minimized panel still says a session is live, and restores to it", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
+  await openFixture(page, baseURL!, "basic.html", bridge);
+
+  const session = requestReview(bridge, { mode: "session" });
+  const panel = page.locator(PANEL);
+  await expect(panel.locator(INSTRUCTION)).toHaveText(SESSION_INSTRUCTION);
+
+  await pickAndNote(page, "#save-btn", "Save is the wrong blue");
+  await page.locator(MINIMIZE).click();
+
+  // The body is folded away — instruction, notes and Submit with it…
+  await expect(panel).toBeVisible();
+  await expect(page.locator(INSTRUCTION)).toHaveCount(0);
+  await expect(page.locator(SUBMIT)).toHaveCount(0);
+  // …and the header still says a session is running, in words and in a mark.
+  await expect(panel.locator("h4")).toHaveText("Session running");
+  await expect(panel.locator(LIVE)).toBeVisible();
+  // …and so does the chip: armed is perceptible on it either as the pulse or,
+  // for anyone who asked for less motion, as the static ring that stands in.
+  expect(
+    await page
+      .locator(CHIP)
+      .evaluate(
+        (el) => el.hasAttribute("data-uifb-pulse") || el.hasAttribute("data-uifb-static"),
+      ),
+  ).toBe(true);
+  expect(session.settled()).toBe(false);
+
+  // Restoring brings the whole request back, notes and all.
+  await page.locator(MINIMIZE).click();
+  await expect(panel.locator(INSTRUCTION)).toHaveText(SESSION_INSTRUCTION);
+  await expect(panel).toContainText("Save is the wrong blue");
+
+  await page.locator(SUBMIT).click();
+  const outcome = await session.outcome;
+  expect(outcome.verdict).toBe("submitted");
+  expect(outcome.entries.map((entry) => entry.note)).toEqual(["Save is the wrong blue"]);
 });

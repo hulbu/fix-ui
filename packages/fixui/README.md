@@ -14,8 +14,12 @@ That is the whole install. Your agent reads the page, runs the installer, wires
 the adapter for whatever framework this is, and confirms the picker actually
 appears before telling you it is done.
 
-Then: click the orange circle, point at something, describe what should change,
-and say **`fix ui`**.
+Then: click the orange circle, point at something, describe what should change.
+Two ways to hand it over:
+
+- **`fix ui`** — the agent works through the notes you have already left.
+- **`start a fix ui session`** — the agent stands by while you walk the UI,
+  fixes each batch you submit, and waits again.
 
 ---
 

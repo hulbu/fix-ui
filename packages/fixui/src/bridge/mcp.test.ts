@@ -186,6 +186,10 @@ it("lists tools; list_feedback and resolve_feedback round-trip against a temp pr
   expect(session.description).toMatch(/resolve_feedback/);
   expect(session.inputSchema.properties).toHaveProperty("surfaceId");
   expect(session.inputSchema.required).toBeUndefined(); // a session needs no prompt
+  // …and does not offer one: the panel says a fixed line, and what the agent
+  // changed is a TERMINAL report, not something to put on the page.
+  expect(session.inputSchema.properties).not.toHaveProperty("prompt");
+  expect(session.description).toMatch(/terminal/i);
   for (const tool of tools.tools) {
     expect(typeof tool.description).toBe("string");
     expect(tool.inputSchema.type).toBe("object");
@@ -364,7 +368,7 @@ it("start_fix_ui_session blocks on the page, aims like a review, and answers wit
       arguments: { surfaceId: page.id(), timeoutSeconds: 5 },
     });
     await waitUntil(() => page.events.includes("review-requested"), "the page to be armed");
-    // The page is told which banner to draw, and a session needs no prompt from
+    // The page is told which question to ask, and a session needs no prompt from
     // the agent — the human already knows what they asked for.
     expect(page.requested()).toMatchObject({ mode: "session" });
     expect(typeof page.requested().prompt).toBe("string");
@@ -399,10 +403,13 @@ it("proxy mode: start_fix_ui_session forwards the session over HTTP", async () =
     const client = await linkedTools(httpTools(`http://127.0.0.1:${bridge.port}`, dir));
     const call = client.callTool({
       name: "start_fix_ui_session",
+      // Passed and ignored: a session takes no prompt, and an agent that sends
+      // one anyway must not get its prose onto the page (`POST /reviews` accepts
+      // a session without one, which is what the empty prompt below proves).
       arguments: { prompt: "anything broken?", timeoutSeconds: 5 },
     });
     await waitUntil(() => page.events.includes("review-requested"), "the page to be armed");
-    expect(page.requested()).toMatchObject({ mode: "session", prompt: "anything broken?" });
+    expect(page.requested()).toMatchObject({ mode: "session", prompt: "" });
 
     await bridge.broker.submitVerdict(page.reviewId(), "submitted", []);
     expect(JSON.parse(((await call) as any).content[0].text).verdict).toBe("submitted");
@@ -453,11 +460,11 @@ it("in-process resolve_feedback announces the change to the pages and to the wat
  * in Claude Code sends. The review must end there, in BOTH process modes: the
  * agent that asked is gone, nobody will ever read the outcome, and a review
  * left pending wedges the project as `busy` (for `timeoutSeconds` — ten minutes
- * by default) with the page's review banner still up.
+ * by default) with the page still asking.
  */
 const cancelled = /cancel|abort/i;
 
-it("daemon mode: cancelling request_review frees the project and stands the banner down", async () => {
+it("daemon mode: cancelling request_review frees the project and stands the request down", async () => {
   const dir = await tempProject();
   const broker = createReviewBroker();
   const cancelledEvents: string[] = [];
@@ -477,7 +484,7 @@ it("daemon mode: cancelling request_review frees the project and stands the bann
   controller.abort();
   await expect(call).rejects.toThrow(cancelled);
 
-  // The page is told, so the banner comes down rather than waiting out 600s.
+  // The page is told, so the request comes down rather than waiting out 600s.
   await waitUntil(() => cancelledEvents.includes("review-cancelled"), "the page to be told");
 
   // And the project is free AT ONCE — a `busy` here would be the wedge.

@@ -1,13 +1,14 @@
 import {
+  AGENT,
   APPROVE,
   armPicker,
-  BANNER,
   BOX,
   expect,
   NOTE,
   openFixture,
   POP,
   requestReview,
+  PANEL,
   SAVE,
   test,
   TOAST,
@@ -77,25 +78,33 @@ test("picking inside an open modal: click suppressed, UI interactive, entry save
 });
 
 /**
- * ★ The agent-initiated direction while a modal is open: the banner has to
- * re-home into the dialog too, and its buttons have to work there — otherwise
- * the reviewer can see the request and not answer it.
+ * ★ The agent-initiated direction while a modal is open: the panel hosting the
+ * request has to re-home into the dialog too, and its buttons have to work
+ * there — otherwise the reviewer can see the request and not answer it. The
+ * merge made this MORE load-bearing, not less: the prompt and the verdict
+ * buttons ride in on the same element the notes list does.
  */
-test("the review banner is usable while a modal is open", async ({ page, baseURL, bridge }) => {
+test("the review is usable inside the panel while a modal is open", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
   await openFixture(page, baseURL!, "modal.html", bridge);
   await page.locator("#open-modal").click();
   await expect(page.locator("#modal-dialog")).toBeVisible();
 
   const review = requestReview(bridge, { prompt: "Does the settings modal look right?" });
 
-  const banner = page.locator(BANNER);
-  await expect(banner).toBeVisible();
-  await expect(banner).toContainText("Does the settings modal look right?");
-  expect(await banner.evaluate((el) => el.closest("dialog")?.id ?? null)).toBe("modal-dialog");
+  // The panel opened itself, inside the dialog — anywhere else it would be
+  // inert, and the human could read the request but never answer it.
+  const panel = page.locator(PANEL);
+  await expect(panel).toBeVisible();
+  await expect(panel.locator(AGENT)).toContainText("Does the settings modal look right?");
+  expect(await panel.evaluate((el) => el.closest("dialog")?.id ?? null)).toBe("modal-dialog");
   // The agent is genuinely blocked on the human at this point.
   expect(review.settled()).toBe(false);
 
   await page.locator(APPROVE).click();
   expect(await review.outcome).toMatchObject({ verdict: "approved", entries: [] });
-  await expect(banner).toHaveCount(0);
+  await expect(page.locator(AGENT)).toHaveCount(0);
 });

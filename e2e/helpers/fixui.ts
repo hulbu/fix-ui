@@ -16,13 +16,38 @@ export const NOTE = "[data-uifb-pop] textarea";
 export const SAVE = "[data-uifb-save]";
 export const BOX = "[data-uifb-box]";
 export const TOAST = "[data-uifb-toast]";
-export const BANNER = "[data-uifb-banner]";
+/**
+ * The agent's prompt, inside the notes panel — there is no separate banner any
+ * more: a review IS the panel, with the question at the top and the buttons
+ * under the notes they act on.
+ *
+ * A REVIEW only. The page is the tool and the terminal is the conversation, so
+ * a session's panel says a fixed instruction (INSTRUCTION, below) and the
+ * agent's account of what it changed goes to the terminal instead.
+ */
+export const AGENT = "[data-uifb-agent]";
+/** A session's fixed line, and the whole of what its panel says. */
+export const INSTRUCTION = "[data-uifb-instruction]";
+export const SESSION_INSTRUCTION = "Point at an element, describe the fix, then press Submit.";
+/** The panel's live mark, up for as long as a request is — minimized or not. */
+export const LIVE = "[data-uifb-live]";
 export const APPROVE = "[data-uifb-approve]";
 export const CHANGES = "[data-uifb-changes]";
-/** A session's one button — the whole of what the banner asks for. */
+/** A session's one button — the whole of what it asks for. */
 export const SUBMIT = "[data-uifb-submit]";
+/** Fold the panel to its header bar. */
+export const MINIMIZE = "[data-uifb-min]";
 /** The note count on the chip. Absent entirely when the inbox is empty. */
 export const BADGE = "[data-uifb-badge]";
+/** The per-note delete button — one per row in the panel. */
+export const DEL = "[data-uifb-del]";
+/** The chip's glyph, in its own element so the armed pulse can target it. */
+export const GLYPH = "[data-uifb-glyph]";
+/** The panel's header bar, and the dotted grip that says it can be dragged. */
+export const HEAD = "[data-uifb-head]";
+export const GRIP = "[data-uifb-grip]";
+/** Any mark the picker draws for itself — an inline SVG path, never a glyph. */
+export const MARK = "[data-uifb-mark]";
 
 export const test = base.extend<{ bridge: Bridge }>({
   bridge: async ({}, use) => {
@@ -163,11 +188,12 @@ export interface HeldReview {
 export function requestReview(
   bridge: Bridge,
   body: {
-    prompt: string;
+    /** A review must ask something. A session asks nothing — it takes no prompt. */
+    prompt?: string;
     url?: string;
     surfaceId?: string;
     timeoutSeconds?: number;
-    /** `session` is what `start_fix_ui_session` posts — the Submit banner. */
+    /** `session` is what `start_fix_ui_session` posts — the Submit button. */
     mode?: "review" | "session";
   },
 ): HeldReview {

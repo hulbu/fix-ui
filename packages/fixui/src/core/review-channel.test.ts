@@ -270,7 +270,7 @@ describe("connectReviewChannel", () => {
     }
   });
 
-  /** A session is the same channel wearing a different banner: the mode travels
+  /** A session is the same channel asking a different question: the mode travels
    *  on `review-requested`, and the verdict travels back the same way. */
   it("carries a session's mode to the picker and its submitted verdict back", async () => {
     const picker = fakePicker();
@@ -286,9 +286,20 @@ describe("connectReviewChannel", () => {
     });
 
     // An unknown mode is not a mode: an older page would ignore it, and a newer
-    // bridge must not be able to talk this one into a banner it cannot answer.
+    // bridge must not be able to talk this one into a mode it cannot answer.
     source.emit("review-requested", { reviewId: "rev-2", prompt: "plain", mode: "whatever" });
     expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "rev-2", prompt: "plain" });
+
+    // A session carries no prompt at all now — its panel says a fixed line, and
+    // the agent's account of the batch goes to the terminal. So the channel must
+    // pass one through without inventing a prompt for it…
+    source.emit("review-requested", { reviewId: "ses-2", mode: "session" });
+    expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "ses-2", mode: "session" });
+
+    // …while a review with no prompt is still a question with no question in
+    // it: unanswerable on the page, so it is not raised.
+    source.emit("review-requested", { reviewId: "rev-3" });
+    expect(picker.startReview).toHaveBeenLastCalledWith({ reviewId: "ses-2", mode: "session" });
 
     picker.verdict({ reviewId: "ses-1", verdict: "submitted", entryIds: ["e1"] });
     await settle();

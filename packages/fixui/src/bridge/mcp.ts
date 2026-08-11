@@ -39,13 +39,15 @@ const PROGRESS_MS = 10_000;
 const INVALID_PROJECT = "project must be an absolute path to an existing directory";
 
 export interface ReviewToolInput {
-  prompt: string;
+  /** The question a review asks. A session asks none — its panel says a fixed
+   *  line — so it omits this, and the bridge no longer demands one. */
+  prompt?: string;
   url?: string;
   timeoutSeconds?: number;
   project?: string;
   /** One connected page from `list_surfaces`, instead of all of them. */
   surfaceId?: string;
-  /** `session` draws the Submit banner instead of Approve / Request changes;
+  /** `session` draws one Submit button instead of Approve / Request changes;
    *  absent is a plain review (docs/agent-integration.md "Sessions"). */
   mode?: ReviewMode;
   /**
@@ -53,7 +55,7 @@ export interface ReviewToolInput {
    * `notifications/cancelled`, which is what Esc in Claude Code does.
    *
    * Without it an escaped review keeps its project `busy` for the rest of
-   * `timeoutSeconds` (ten minutes by default) with the page's banner still up,
+   * `timeoutSeconds` (ten minutes by default) with the page still asking,
    * and the only recovery in daemon mode is killing an MCP server the session
    * itself owns. The socket-level guard in server.ts covers a different death
    * (the whole proxy process going away), not this one.
@@ -157,16 +159,13 @@ const TOOLS: Tool[] = [
       "says stop or a session times out — returning to the terminal after a single batch is the " +
       "mistake to avoid. Sessions are one-at-a-time per project like reviews (`busy`), and " +
       "surfaceId aims at one page the same way. Use request_review instead when you want a " +
-      "yes-or-no on a specific change you just made.",
+      "yes-or-no on a specific change you just made. " +
+      "There is no prompt: the panel shows a fixed instruction, and what you changed goes in " +
+      "your TERMINAL reply before you call this again — a ✓ line per change, a ⚠ line per thing " +
+      "you could not do.",
     inputSchema: {
       type: "object",
       properties: {
-        prompt: {
-          type: "string",
-          description:
-            "Optional line for the session banner — what you are standing by for. The human " +
-            "asked for the session, so a default is fine.",
-        },
         url: { type: "string", description: "Page the session should run on; the page navigates." },
         surfaceId: {
           type: "string",
@@ -181,10 +180,6 @@ const TOOLS: Tool[] = [
     },
   },
 ];
-
-/** What the banner says when the agent supplied nothing: the human started this
- *  session, so the tool has no business demanding they be told what it is. */
-const DEFAULT_SESSION_PROMPT = "Point at anything that needs fixing, then press Submit.";
 
 class ToolError extends Error {}
 
@@ -242,15 +237,19 @@ export function createMcpServer(tools: ReviewTools, options: McpServerOptions = 
             ),
           );
 
-        // One held call, two banners. Everything below — targeting, the
+        // One held call, two questions. Everything below — targeting, the
         // timeout, the keep-alive ticker, cancellation — is the same for both;
-        // only the mode, and what the prompt is allowed to be, differ.
+        // only the mode, and whether there is a prompt at all, differ.
+        //
+        // A review asks the human something, so it must say what. A session's
+        // panel says one fixed line whatever the agent passes (core/picker.ts
+        // SESSION_INSTRUCTION), so there is nothing here for a prompt to carry:
+        // the account of what changed is the agent's TERMINAL report instead.
         case "request_review":
         case "start_fix_ui_session": {
           const session = request.params.name === "start_fix_ui_session";
-          const asked = optionalString(args.prompt, "prompt")?.trim();
           const input: ReviewToolInput = session
-            ? { prompt: asked === undefined || asked === "" ? DEFAULT_SESSION_PROMPT : asked }
+            ? {}
             : { prompt: filledString(args.prompt, "prompt") };
           if (session) input.mode = "session";
           const url = optionalString(args.url, "url");
@@ -420,12 +419,12 @@ export function inProcessTools(
     requestReview(input) {
       return broker.requestReview({
         project: resolve(input.project),
-        prompt: input.prompt,
+        prompt: input.prompt ?? "",
         ...(input.url === undefined ? {} : { url: input.url }),
         ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         timeoutSeconds: input.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
-        // Esc in the client frees the project and stands the banner down, the
+        // Esc in the client frees the project and stands the request down, the
         // same way a dead agent's dropped socket does over HTTP.
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
@@ -512,12 +511,12 @@ export function httpTools(baseUrl: string, defaultProject: string, token?: strin
       // Dropping this request is how the cancellation reaches the daemon: the
       // held `POST /reviews` watches its own response socket and abandons the
       // review the moment it closes (server.ts), which frees the project and
-      // stands the page's banner down.
+      // takes the request off the page.
       const { status, payload } = await call(
         "POST",
         "/reviews",
         {
-          prompt: input.prompt,
+          ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
           ...(input.url === undefined ? {} : { url: input.url }),
           ...(input.surfaceId === undefined ? {} : { surfaceId: input.surfaceId }),
           ...(input.mode === undefined ? {} : { mode: input.mode }),
