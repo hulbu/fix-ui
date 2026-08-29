@@ -73,6 +73,22 @@ const KEEP_VISIBLE = 48;
  * over it the chip moves and the click that follows is swallowed.
  */
 const CLICK_SLOP = 4;
+/**
+ * The geometry every icon button in a note row shares — delete, and now copy.
+ *
+ * `box-sizing` and `padding:0` are load-bearing rather than tidiness: a host
+ * page's own `button{padding:…}` cascades into this UI, and under content-box
+ * that padding widened the disc into an oval with the mark shoved out of it.
+ * 24px is what pinning the box down costs nothing to keep, and it is the floor
+ * WCAG 2.2 sets for a target this shape.
+ *
+ * One constant, two rules: the two controls sit side by side at the end of a
+ * row, so any drift between them is visible as a wobble in the pair.
+ */
+const ICON_BUTTON = `border:0;background:#00000010;color:#1c1c1c;cursor:pointer;
+      flex:none;box-sizing:border-box;padding:0;
+      display:flex;align-items:center;justify-content:center;
+      width:24px;height:24px;border-radius:999px;`;
 
 /** Each selector in a comma list, plus everything inside it. */
 function withDescendants(selectors: string): string {
@@ -442,21 +458,21 @@ export function createPicker(opts: PickerOptions): Picker {
        \`font:600 13px/22px\` around a U+00D7, which is line-height doing the
        centring — and that only lands when the glyph's own ink happens to be
        symmetric about the baseline, which U+00D7's is not. It is a drawn mark
-       now (see \`cross\`), centred by the flex box.
-       \`box-sizing\` and \`padding:0\` are load-bearing, not tidiness: a host
-       page's own \`button{padding:...}\` cascades into this UI, and under
-       content-box that padding was widening the 22px disc into a 28x22 oval
-       with the glyph shoved out of it.
-       24px rather than the 22px this rule used to declare, because pinning the
-       box down is what takes the accidental width away with it: on a page that
-       styles its buttons this was 28 across, and the smallest control in the
-       product should not come out of a centring fix narrower than it went in.
-       24 is also the floor WCAG 2.2 sets for a target this shape. */
-    [${NS}-del]{border:0;background:#00000010;color:#1c1c1c;cursor:pointer;
-      flex:none;box-sizing:border-box;padding:0;
-      display:flex;align-items:center;justify-content:center;
-      width:24px;height:24px;border-radius:999px;}
+       now (see \`cross\`), centred by the flex box. The geometry it stands on
+       lives in \`ICON_BUTTON\`, which the copy control below shares. */
+    [${NS}-del]{${ICON_BUTTON}}
     [${NS}-del]:hover{background:${accent};color:#fff;}
+    /* Copy: the same disc, from the same constant, for the same reason — a
+       second control beside the first is exactly how the deformation this rule
+       was fixed for would come back. Stated as its own rule rather than merged
+       into the selector above so each control's geometry can be read (and
+       asserted) on its own. */
+    [${NS}-copy]{${ICON_BUTTON}}
+    [${NS}-copy]:hover{background:${accent};color:#fff;}
+    /* The row's controls, as one object. The row's own 8px gap then separates
+       the note from the pair, and only these 4px separate the pair — two 24px
+       targets that read as a set instead of crowding each other. */
+    [${NS}-tools]{display:flex;align-items:center;gap:4px;flex:none;}
     /* A row, so the mark and the label are centred as one — and the mark is
        drawn rather than typeset for the same reason the delete cross is. */
     [${NS}-pick]{width:100%;box-sizing:border-box;border:0;cursor:pointer;
@@ -1007,6 +1023,26 @@ ${CURSOR_CSS}  `;
   }
 
   /**
+   * Copy. Two sheets, the back one showing as the corner it is behind — the
+   * ordinary copy idiom, and drawn for the same reason the cross beside it is:
+   * a character (U+2398, U+29C9, an emoji) renders as whatever the platform
+   * resolved `system-ui` to, at whatever weight that font happens to have, and
+   * sits wherever its own metrics put it.
+   *
+   * The two paths are read as one mark, so it is their COMBINED extents that
+   * have to be symmetric about the viewBox: 2.8 and 9.2 on both axes, either
+   * side of 6. The front sheet is closed by restating its first point — every
+   * `d` here is absolute `M`/`L` points only, which is what lets the symmetry
+   * be a unit test rather than a screenshot.
+   */
+  function copyMark(): SVGSVGElement {
+    return svgMark(12, 1.5, [
+      "M7.6 2.8L2.8 2.8L2.8 7.6",
+      "M5.2 5.2L9.2 5.2L9.2 9.2L5.2 9.2L5.2 5.2",
+    ]);
+  }
+
+  /**
    * The picker's own mark — the open-centre cross the chip wears, drawn at the
    * size the Pick button needs it.
    */
@@ -1157,12 +1193,28 @@ ${CURSOR_CSS}  `;
         mark.textContent = "Queued — waiting for the bridge";
         text.append(mark);
       }
+      // Copy first, delete second: copy is the harmless one, and the
+      // destructive control should not be the thing under the pointer on the
+      // way to it.
+      const copy = document.createElement("button");
+      copy.setAttribute(`${NS}-copy`, "");
+      copy.setAttribute("aria-label", "Copy note");
+      copy.append(copyMark());
+      copy.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void copyEntry(entry);
+      });
       const del = document.createElement("button");
       del.setAttribute(`${NS}-del`, "");
       del.setAttribute("aria-label", "Delete note");
       del.append(cross());
       del.addEventListener("click", () => void deleteEntry(entry.id));
-      row.append(text, del);
+      // One box for the pair, so the row's own gap keeps separating the note
+      // from the controls rather than the controls from each other.
+      const tools = document.createElement("div");
+      tools.setAttribute(`${NS}-tools`, "");
+      tools.append(copy, del);
+      row.append(text, tools);
       panel.append(row);
     }
 
@@ -1211,6 +1263,51 @@ ${CURSOR_CSS}  `;
       );
       panel.append(actions);
     }
+  }
+
+  /**
+   * What a note is worth pasting into a chat: WHERE, then WHAT.
+   *
+   * The author was selecting the selector out of the panel by hand to paste at
+   * an agent — so the useful unit is the instruction, and an instruction needs
+   * both halves. The note alone has no anchor ("make this bigger" — make WHAT
+   * bigger?); the selector alone is not an ask; the whole entry is a wall of
+   * userAgent, viewport and console noise around the one line that was wanted,
+   * and anything that wants the wall already has `fix ui`.
+   *
+   * Exactly the two lines the row already shows, joined — including the
+   * component name when there is one, because `<PricingTable> #cta` is what a
+   * person searches their codebase for. The note goes in FULL: the row elides
+   * at 90 characters to keep its shape, and a half-copied instruction is worse
+   * than none.
+   */
+  function copyText(entry: FeedbackEntry): string {
+    const where = entry.component ? `<${entry.component}> ${entry.selector}` : entry.selector;
+    return `${where} — ${entry.note}`;
+  }
+
+  /**
+   * Put a note on the clipboard, or say honestly that we could not.
+   *
+   * Feature-detected at CLICK time rather than at construction: `navigator.
+   * clipboard` is absent on an insecure origin and on older engines, and a page
+   * can be either at any point in its life. Nothing here is allowed to throw —
+   * a rejected `writeText` (no user activation, permission denied) is an
+   * ordinary outcome of pressing this button, not an error the host page should
+   * ever see in its console.
+   */
+  async function copyEntry(entry: FeedbackEntry): Promise<void> {
+    let wrote = false;
+    try {
+      const clip = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+      if (clip && typeof clip.writeText === "function") {
+        await clip.writeText(copyText(entry));
+        wrote = true;
+      }
+    } catch {
+      wrote = false; // refused, or no clipboard at all — same story to tell
+    }
+    toast(wrote ? "Copied the note" : "Clipboard unavailable");
   }
 
   async function deleteEntry(id: string): Promise<void> {

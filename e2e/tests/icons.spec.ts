@@ -1,6 +1,7 @@
 import {
   BADGE,
   CHIP,
+  COPY,
   DEL,
   GLYPH,
   GRIP,
@@ -9,6 +10,7 @@ import {
   MINIMIZE,
   PANEL,
   PICK,
+  TOAST,
   expect,
   openFixture,
   pickAndNote,
@@ -88,6 +90,7 @@ test("every mark sits dead centre in the control that draws it", async ({
   await page.locator(CHIP).click();
   await expect(page.locator(PANEL)).toHaveCount(1);
   await expect(page.locator(DEL)).toHaveCount(1);
+  await expect(page.locator(COPY)).toHaveCount(1);
 
   const measured = await page.evaluate(() => {
     function edges(rect: DOMRect): Edges {
@@ -141,7 +144,26 @@ test("every mark sits dead centre in the control that draws it", async ({
     const at = (selector: string) => document.querySelector(selector)!;
     const markIn = (selector: string) => at(selector).querySelector("svg")! as SVGSVGElement;
 
+    /**
+     * Is this control actually clickable where it is drawn?
+     *
+     * Centring is half the claim; the other half is that the pixel in the
+     * middle of the box belongs to this control and not to its neighbour, to
+     * the row, or to a popover layered over the top. `elementFromPoint`
+     * respects the top layer, which is where the panel lives, so this is the
+     * browser's own hit test rather than an arithmetic re-derivation of it.
+     */
+    function hitTest(el: Element): boolean {
+      const rect = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        rect.left + rect.width / 2,
+        rect.top + rect.height / 2,
+      );
+      return hit !== null && el.contains(hit);
+    }
+
     const del = at("[data-uifb-del]");
+    const copy = at("[data-uifb-copy]");
     const min = at("[data-uifb-min]");
     const pick = at("[data-uifb-pick]");
     const chip = at("[data-uifb-chip]");
@@ -155,6 +177,26 @@ test("every mark sits dead centre in the control that draws it", async ({
         inkOf(markIn("[data-uifb-del]")),
         edges(markIn("[data-uifb-del]").getBoundingClientRect()),
       ),
+      // …and the control that just moved in next door, held to the same claim.
+      copy: gapsOf(inkOf(markIn("[data-uifb-copy]")), edges(copy.getBoundingClientRect())),
+      copyInOwnBox: gapsOf(
+        inkOf(markIn("[data-uifb-copy]")),
+        edges(markIn("[data-uifb-copy]").getBoundingClientRect()),
+      ),
+      // Two small targets side by side: each one clickable in its own middle,
+      // and separated by the 4px the sheet declares rather than overlapping.
+      pair: {
+        copyHit: hitTest(copy),
+        delHit: hitTest(del),
+        gap: del.getBoundingClientRect().left - copy.getBoundingClientRect().right,
+        // Copy comes first — the destructive control is not on the way to it.
+        copyBeforeDel: copy.getBoundingClientRect().left < del.getBoundingClientRect().left,
+        // …and the pair sits inside the row, not spilling out of it.
+        insideRow:
+          copy.getBoundingClientRect().left >= at("[data-uifb-row]").getBoundingClientRect().left &&
+          del.getBoundingClientRect().right <=
+            at("[data-uifb-row]").getBoundingClientRect().right + 0.5,
+      },
       // The minimize chevron, in its 20px box.
       min: gapsOf(inkOf(markIn("[data-uifb-min]")), edges(min.getBoundingClientRect())),
       minInOwnBox: gapsOf(
@@ -178,6 +220,7 @@ test("every mark sits dead centre in the control that draws it", async ({
       ),
       sizes: {
         del: [del.getBoundingClientRect().width, del.getBoundingClientRect().height],
+        copy: [copy.getBoundingClientRect().width, copy.getBoundingClientRect().height],
         min: [min.getBoundingClientRect().width, min.getBoundingClientRect().height],
         chip: [chip.getBoundingClientRect().width, chip.getBoundingClientRect().height],
         badge: [
@@ -209,6 +252,22 @@ test("every mark sits dead centre in the control that draws it", async ({
   expectCentred(measured.del);
   expectCentred(measured.delInOwnBox);
 
+  // --- the control that moved in beside it ----------------------------------
+  // Same square, from the same constant in the sheet — on the same hostile
+  // fixture, whose `button{padding:6px 14px}` is what deformed the first one.
+  expect(measured.sizes.copy).toEqual([24, 24]);
+  expectCentred(measured.copy);
+  expectCentred(measured.copyInOwnBox);
+
+  // Centred is not enough for a 24px target with a neighbour: each has to be
+  // the thing the browser actually hits in its own middle, and they must not
+  // be sitting on top of each other to manage it.
+  expect(measured.pair.copyHit).toBe(true);
+  expect(measured.pair.delHit).toBe(true);
+  expect(measured.pair.gap).toBeCloseTo(4, 1);
+  expect(measured.pair.copyBeforeDel).toBe(true);
+  expect(measured.pair.insideRow).toBe(true);
+
   // --- the rest of the audit ------------------------------------------------
   expect(measured.sizes.min).toEqual([20, 20]);
   expectCentred(measured.min);
@@ -237,9 +296,49 @@ test("every mark sits dead centre in the control that draws it", async ({
     TOLERANCE,
   );
 
-  // Every mark on screen is one the picker drew: the delete cross, the
-  // chevron and the Pick button's cross.
-  expect(measured.marks).toBe(3);
+  // Every mark on screen is one the picker drew: the copy sheets, the delete
+  // cross, the chevron and the Pick button's cross. No glyphs, no emoji.
+  expect(measured.marks).toBe(4);
+});
+
+/**
+ * The copy control doing its job in a real browser, where the clipboard is a
+ * permission and not a stub.
+ *
+ * Chromium hands a Playwright context clipboard-write without a prompt, so the
+ * write is the real `navigator.clipboard.writeText` — and the read-back below
+ * is what proves the button copied the note rather than merely toasting.
+ */
+test("copying a note puts the element and the note on the clipboard", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
+  // Reading it back is what makes this an assertion rather than a toast check,
+  // and reading the clipboard is a permission the browser has to be asked for.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+    origin: baseURL!,
+  });
+  await openFixture(page, baseURL!, "basic.html", bridge);
+
+  await page.locator(CHIP).click();
+  await page.locator(PICK).click();
+  await pickAndNote(page, "#save-btn", "Primary button should be brand blue");
+  await page.locator(CHIP).click(); // armed → stand down
+  await page.locator(CHIP).click(); // → open the panel
+
+  await page.locator(COPY).click();
+  await expect(page.locator(TOAST).filter({ hasText: "Copied" }).last()).toBeVisible();
+
+  // WHERE, then WHAT — one line, which is what gets pasted at an agent.
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboard).toBe("#save-btn — Primary button should be brand blue");
+
+  // The delete control beside it still does its own job, unmoved by the
+  // neighbour: the row goes, and the note goes with it.
+  await page.locator(DEL).click();
+  await expect(page.locator(DEL)).toHaveCount(0);
+  await expect.poll(async () => (await bridge.entries()).length).toBe(0);
 });
 
 test("a minimized panel still centres the mark it has left", async ({ page, baseURL, bridge }) => {

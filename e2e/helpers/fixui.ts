@@ -41,6 +41,10 @@ export const MINIMIZE = "[data-uifb-min]";
 export const BADGE = "[data-uifb-badge]";
 /** The per-note delete button — one per row in the panel. */
 export const DEL = "[data-uifb-del]";
+/** The per-note copy button, beside it: selector and note onto the clipboard. */
+export const COPY = "[data-uifb-copy]";
+/** The box holding the pair, so the row's own gap separates text from controls. */
+export const TOOLS = "[data-uifb-tools]";
 /** The chip's glyph, in its own element so the armed pulse can target it. */
 export const GLYPH = "[data-uifb-glyph]";
 /** The panel's header bar, and the dotted grip that says it can be dragged. */

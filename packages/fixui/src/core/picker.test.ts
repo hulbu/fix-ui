@@ -263,6 +263,7 @@ afterEach(() => {
   while (live.length > 0) live.pop()!.destroy();
   document.body.innerHTML = "";
   document.documentElement.removeAttribute(`${NS}-armed`);
+  vi.unstubAllGlobals();
 });
 
 describe("createPicker", () => {
@@ -1252,6 +1253,152 @@ describe("armed chip motion", () => {
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
     picker.enable();
     expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
+  });
+});
+
+/**
+ * "maybe we also add copy button."
+ *
+ * The author was selecting a note's selector out of the panel by hand to paste
+ * into a chat. What a person pastes there is an instruction, and an instruction
+ * needs both halves: WHERE (the selector, with the component name when there is
+ * one) and WHAT (the note, in full). The note alone has no anchor; the selector
+ * alone is not an ask; the raw entry is a wall of userAgent, viewport and
+ * console noise around the one line that was wanted.
+ */
+describe("a copy control on every note", () => {
+  /** A panel with one saved note in it, and a clipboard that records. */
+  async function panelWithNote(
+    note: string,
+    clipboard?: { writeText?: unknown },
+  ): Promise<{ row: HTMLElement; copy: HTMLButtonElement; entry: FeedbackEntry }> {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport, capture: { componentName: () => "PricingTable" } });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave(note);
+    picker.disable();
+    transport.listed.push(transport.created[0]!); // the inbox has it now
+
+    // Stubbed AFTER the entry is built: `buildEntry` reads navigator.userAgent,
+    // and the clipboard is read live, at click time, precisely so a page that
+    // gains or loses it mid-life is handled by the same branch.
+    vi.stubGlobal("navigator", { userAgent: "vitest", ...(clipboard ? { clipboard } : {}) });
+
+    const open = await openPanel();
+    const row = open.querySelector<HTMLElement>(`[${NS}-row]`)!;
+    return {
+      row,
+      copy: row.querySelector<HTMLButtonElement>(`[${NS}-copy]`)!,
+      entry: transport.created[0]!,
+    };
+  }
+
+  it("copies where and what, in full, and says that it did", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    const long = `make this ${"much ".repeat(30)}bigger`;
+    const { copy } = await panelWithNote(long, { writeText });
+
+    expect(copy).not.toBeNull();
+    expect(copy.getAttribute("aria-label")).toBe("Copy note");
+    copy.click();
+    await settle();
+
+    // The row truncates at 90 characters for display; the clipboard does not —
+    // a half-copied instruction is worse than none.
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(`<PricingTable> #cta — ${long}`);
+    expect(lastToast()).toBe("Copied the note");
+  });
+
+  it("names the element the same way the row does, component and all", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    const { copy } = await panelWithNote("tighten the spacing", { writeText });
+
+    copy.click();
+    await settle();
+
+    // Exactly what the row shows underneath the note — one line, pasteable.
+    expect(writeText.mock.calls[0]![0]).toBe("<PricingTable> #cta — tighten the spacing");
+  });
+
+  it("does not throw, and does not claim success, when the page has no clipboard", async () => {
+    const { copy } = await panelWithNote("no clipboard here");
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  it("does not throw when the clipboard API exists but refuses", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("clipboard needs user activation");
+    });
+    const { copy } = await panelWithNote("a refused copy", { writeText });
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  it("does not throw when the clipboard object is there but writeText is not", async () => {
+    const { copy } = await panelWithNote("half a clipboard", {});
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  /**
+   * The row layout was fixed once already for exactly this deformation, and
+   * adding a second 24px target beside the first is how it would come back.
+   */
+  it("sits beside delete without crowding it, in the same drawn-icon treatment", async () => {
+    const { row, copy } = await panelWithNote("a note with two controls", {
+      writeText: async () => {},
+    });
+    const del = row.querySelector<HTMLButtonElement>(`[${NS}-del]`)!;
+
+    // Both in one box at the end of the row, so the row's own 8px gap still
+    // separates the text from the controls and only 4px separates the two.
+    const tools = row.querySelector<HTMLElement>(`[${NS}-tools]`)!;
+    expect(tools).not.toBeNull();
+    expect(copy.parentElement).toBe(tools);
+    expect(del.parentElement).toBe(tools);
+    expect(tools.parentElement).toBe(row);
+    // Copy first: it is the harmless one, and the destructive control should
+    // not be the one under the pointer on the way to it.
+    expect([...tools.children]).toEqual([copy, del]);
+    expect(ruleFor(`[${NS}-tools]`)).toContain("display:flex");
+    expect(ruleFor(`[${NS}-tools]`)).toContain("gap:4px");
+
+    // The same disc as delete, declared the same way, for the same reason: a
+    // host page's own `button{padding:…}` must not be able to deform it.
+    const rule = ruleFor(`[${NS}-copy]`);
+    for (const declaration of [
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "box-sizing:border-box",
+      "padding:0",
+      "width:24px",
+      "height:24px",
+    ]) {
+      expect(rule).toContain(declaration);
+    }
+    expect(rule).not.toMatch(/font:|line-height|text-indent|transform|vertical-align/);
+
+    // Drawn, never typeset: no character glyph, no emoji.
+    expect(copy.textContent).toBe("");
+    const mark = copy.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
   });
 });
 
