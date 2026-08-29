@@ -328,6 +328,36 @@ describe("initFixUi", () => {
     });
   });
 
+  /**
+   * The reported "I lost all comments", through the whole embed rather than one
+   * seam of it: one storage, two `initFixUi` calls, and the bridge down for both
+   * — which is exactly the situation the report came from.
+   */
+  it("brings notes queued before a reload back into the panel and the badge", async () => {
+    const storage = fakeStorage();
+    const fetchImpl = recordingFetch({ fail: true });
+
+    const before = init({}, { fetchImpl, storage });
+    await settle();
+    await pickAndSave(before, "the bridge was not running when I wrote this");
+    expect(document.querySelector(`[${NS}-badge]`)!.textContent).toBe("1");
+    // The page goes away. Nothing in picker memory survives this.
+    before.close();
+    live.pop();
+    expect(document.querySelector(`[${NS}-badge]`)).toBeNull();
+
+    // …and comes back, over the same storage, with the same dead bridge.
+    init({}, { fetchImpl, storage });
+    await settle();
+
+    expect(document.querySelector(`[${NS}-badge]`)!.textContent).toBe("1");
+    document.querySelector<HTMLButtonElement>(`[${NS}-chip]`)!.click();
+    await settle();
+    const row = document.querySelector(`[${NS}-row]`)!;
+    expect(row.textContent).toContain("the bridge was not running when I wrote this");
+    expect(row.hasAttribute(`${NS}-queued`)).toBe(true);
+  });
+
   it("exposes the live picker surface — `active` is not a snapshot", async () => {
     const ui = init({}, { fetchImpl: recordingFetch() });
     await settle();

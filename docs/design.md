@@ -194,6 +194,12 @@ advice: agent-integration.md "Privacy and trust". In this repo's terms:
 - Bridge unreachable → the adapter queues locally (memory + `localStorage`,
   or `chrome.storage` in the extension) and retries with backoff; last
   resort copies the entry JSON to the clipboard (prototype behavior, kept).
+  A queued note stays visible: the transport restores its queue at
+  construction and publishes it through `pending()`, and the picker seeds its
+  `unconfirmed` set from that, so a page reload puts the notes back in the
+  panel and on the badge (marked as queued) instead of showing an empty panel
+  over a full queue. A count alone could not do that — "no silent drops"
+  covers the UI reporting a loss that did not happen, not just the storage.
 - Inbox file unwritable → bridge answers 500 with the path it tried; the
   adapter surfaces the toast verbatim — no silent drops. "Bridge
   unreachable" is reserved for a request that got no answer at all.

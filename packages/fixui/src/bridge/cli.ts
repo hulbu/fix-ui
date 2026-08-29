@@ -28,14 +28,13 @@
  * terminal has a TTY.
  */
 import { randomBytes } from "node:crypto";
-import { watch } from "node:fs";
 import path from "node:path";
 import { parseDevCommand, runOwner, type OwnerOptions } from "./dev.js";
 import { liveBridge, readDiscovery } from "./discovery.js";
+import { watchInbox } from "./inbox-watch.js";
 import { runInit } from "./init.js";
-import { httpTools, serveMcpOverStdio, type InboxChanges, type ReviewTools } from "./mcp.js";
+import { httpTools, serveMcpOverStdio, type ReviewTools } from "./mcp.js";
 import { HOST } from "./server.js";
-import { INBOX_FILE } from "./storage.js";
 
 /** What every tool says when this project has no bridge running. It names the
  *  fix, because "no surfaces" reads to an agent like "nothing is wrong". */
@@ -160,46 +159,6 @@ function proxyTools(
     async requestReview(input) {
       return (await reach()).requestReview(input);
     },
-  };
-}
-
-/**
- * `feedback/updated` for the proxy (docs/agent-integration.md). The inbox is a
- * file in *this* process's project, so the notification the daemon used to send
- * from its own broker is a file watch here — the same promise to the harness,
- * made by the process the harness is actually connected to.
- *
- * The directory is watched rather than the file: the inbox does not exist until
- * the first note, and a rewrite (`resolve_feedback`) replaces it.
- */
-function watchInbox(project: string): InboxChanges {
-  return (listener) => {
-    let timer: NodeJS.Timeout | undefined;
-    const announce = (): void => {
-      // Coalesced: one note can be several filesystem events, and the listener
-      // is a "look again" hint, not a diff.
-      if (timer) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        listener(project);
-      }, 50);
-      timer.unref(); // a pending hint must never hold the process open
-    };
-
-    let watcher: ReturnType<typeof watch> | undefined;
-    try {
-      watcher = watch(project, (_event, filename) => {
-        if (filename === null || filename === INBOX_FILE) announce();
-      });
-      watcher.on("error", () => undefined); // a watch we lose is not a crash
-    } catch {
-      watcher = undefined; // no watches available: the tools still work
-    }
-
-    return () => {
-      if (timer) clearTimeout(timer);
-      watcher?.close();
-    };
   };
 }
 

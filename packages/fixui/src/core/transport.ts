@@ -38,6 +38,19 @@ export interface Transport {
   list(): Promise<FeedbackEntry[]>;
   /** Body-style DELETE {id} — works against the bridge AND prototype-style app routes. */
   remove(id: string): Promise<boolean>;
+  /**
+   * The entries this transport is holding but has not delivered — including the
+   * ones it restored from storage at construction.
+   *
+   * `onQueueChange` answers "how many"; this answers "which", and only this can
+   * put them back on screen. A page reload builds a new picker with no memory of
+   * the notes it queued, and `list()` cannot help: an undelivered entry is by
+   * definition not in the inbox. Without an enumeration the panel comes up empty
+   * over a full queue, which reads as data loss and is not.
+   *
+   * A copy, so a caller cannot un-queue a note by mutating what it was handed.
+   */
+  pending(): FeedbackEntry[];
   flush(): Promise<void>;
   destroy(): void;
 }
@@ -258,6 +271,10 @@ export function createTransport(opts: TransportOptions): Transport {
       } catch {
         return false;
       }
+    },
+
+    pending() {
+      return queue.map((item) => item.entry);
     },
 
     flush,

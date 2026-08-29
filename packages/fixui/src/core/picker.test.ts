@@ -13,10 +13,17 @@ import type { Transport } from "./transport.js";
 const NS = "data-uifb";
 const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast]`;
 
-type FakeTransport = Transport & { created: FeedbackEntry[]; listed: FeedbackEntry[] };
+type FakeTransport = Transport & {
+  created: FeedbackEntry[];
+  listed: FeedbackEntry[];
+  /** What the transport is still holding — what it restored from storage. */
+  queued: FeedbackEntry[];
+};
 
 function fakeTransport(
   result: { ok: boolean; queued: boolean; error?: string } = { ok: true, queued: false },
+  /** Seeded, as a real transport seeds itself from storage at construction. */
+  queued: FeedbackEntry[] = [],
 ): FakeTransport {
   const created: FeedbackEntry[] = [];
   /** What the bridge inbox reports — [] both when empty and when unreachable. */
@@ -24,13 +31,16 @@ function fakeTransport(
   return {
     created,
     listed,
+    queued,
     create: vi.fn(async (entry: FeedbackEntry) => {
       created.push(entry);
+      if (!result.ok && result.queued) queued.push(entry);
       return result;
     }),
     list: vi.fn(async () => [...listed]),
     remove: vi.fn(async () => true),
     flush: vi.fn(async () => {}),
+    pending: vi.fn(() => [...queued]),
     destroy: vi.fn(),
   };
 }
@@ -253,6 +263,7 @@ afterEach(() => {
   while (live.length > 0) live.pop()!.destroy();
   document.body.innerHTML = "";
   document.documentElement.removeAttribute(`${NS}-armed`);
+  vi.unstubAllGlobals();
 });
 
 describe("createPicker", () => {
@@ -326,6 +337,90 @@ describe("createPicker", () => {
     expect(onSaved).toHaveBeenCalledWith(transport.created[0]);
     expect(query(`[${NS}-pop]`)).toBeNull();
     expect(lastToast()).toContain("Saved (1)");
+  });
+
+  /**
+   * "after clicking 'save note' I have to click select picker once again…
+   * would be great if selector would be by default."
+   *
+   * Leaving several notes is the normal case, not the exception — a session is
+   * built around exactly that gesture. Re-arming between every one of them is
+   * three extra clicks for three notes, all of them saying the thing the user
+   * has already said. So a save no longer stands the picker down; only the ways
+   * out a person actually reaches for do (below).
+   */
+  it("stays armed after a saved note, so the next element can be picked straight away", async () => {
+    document.body.innerHTML = `<button id="one">One</button><button id="two">Two</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport });
+
+    picker.enable();
+    clickSequence(query("#one")!);
+    await typeAndSave("the first note");
+
+    expect(picker.active).toBe(true);
+    // The crosshair is still on, which is the affordance saying so.
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(true);
+    expect(query(`[${NS}-chip]`)!.hasAttribute("data-on")).toBe(true);
+
+    // Nothing of the finished pick is left lying around: no popover to click
+    // through, and no highlight box still framing the element just noted.
+    expect(query(`[${NS}-pop]`)).toBeNull();
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
+
+    // …and the next pick works with no re-arming in between.
+    clickSequence(query("#two")!);
+    expect(query(`[${NS}-pop]`)).not.toBeNull();
+    expect(query(`[${NS}-tag]`)!.textContent).toContain("#two");
+    await typeAndSave("the second note");
+
+    expect(transport.created.map((entry) => entry.selector)).toEqual(["#one", "#two"]);
+    expect(picker.active).toBe(true);
+
+    // …and the toast no longer sends an armed user to the chip, whose first
+    // click while armed is the disarm this test exists to remove.
+    expect(lastToast()).toContain("Saved (2)");
+    expect(lastToast()).not.toContain("✛");
+  });
+
+  it("still stands down for Escape, for the chip, and for disable()", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+
+    // Escape, with a note half-written: the first press drops the popover, the
+    // second stands the picker down. Both survive the save no longer doing it.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    expect(query(`[${NS}-pop]`)).not.toBeNull();
+    const escape = (): void => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    };
+    escape();
+    expect(query(`[${NS}-pop]`)).toBeNull();
+    expect(picker.active).toBe(true);
+    escape();
+    expect(picker.active).toBe(false);
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+
+    // The chip, after a save — the toast's own advice, and the one that used to
+    // be the only way back to an unarmed picker.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note, then the chip");
+    expect(picker.active).toBe(true);
+    query(`[${NS}-chip]`)!.click();
+    expect(picker.active).toBe(false);
+    expect(panel()).toBeNull(); // the first click disarms; it does not open the panel
+
+    // …and the programmatic way out, which the adapters use.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note, then disable()");
+    picker.disable();
+    expect(picker.active).toBe(false);
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
   });
 
   it("re-homes UI into a dialog when its open attribute appears, and back to mount when it closes", async () => {
@@ -846,6 +941,54 @@ describe("createPicker", () => {
     expect(query(`[${NS}-panel]`)!.querySelectorAll(`[${NS}-row]`).length).toBe(1);
   });
 
+  /**
+   * The reported data loss, which was never a data loss: "after refresh of
+   * website I lost all comments."
+   *
+   * A reload builds a NEW picker, so everything it remembered about notes the
+   * bridge had not taken yet is gone. The transport restores those from storage
+   * and keeps retrying them — the notes are safe — but it used to publish only a
+   * COUNT, so the picker had nothing to put back on screen. An empty panel over
+   * a full queue is the same "no silent drops" failure as the hydrate() bug, one
+   * seam along: the UI reporting a loss that did not happen.
+   */
+  it("restores entries queued before a reload into the panel and the badge, marked as queued", async () => {
+    const queued = [inboxEntry("q1", "queued before the reload")];
+    // A fresh picker over a transport that came up holding the same queue —
+    // this is the page reload, and the inbox is still empty (bridge down).
+    const picker = make({ transport: fakeTransport({ ok: false, queued: true }, queued) });
+    await settle();
+
+    // The badge counts them the moment the picker is built — before any panel
+    // is opened, and without waiting on a bridge that is not there.
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+
+    const open = await openPanel();
+    const rows = open.querySelectorAll(`[${NS}-row]`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("queued before the reload");
+    // …and they do not pass themselves off as notes the bridge already has.
+    expect(rows[0]!.hasAttribute(`${NS}-queued`)).toBe(true);
+    expect(rows[0]!.textContent).toContain("Queued");
+    expect(picker.active).toBe(false); // restoring notes arms nothing
+  });
+
+  it("shows a restored entry once, not twice, once the bridge confirms it", async () => {
+    const entry = inboxEntry("q1", "queued before the reload");
+    const transport = fakeTransport({ ok: false, queued: true }, [entry]);
+    make({ transport });
+    await settle();
+
+    // The transport flushed while the page was up: the inbox reports it now.
+    transport.listed.push(entry);
+    const open = await openPanel();
+
+    expect(open.querySelectorAll(`[${NS}-row]`)).toHaveLength(1);
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    // Confirmed is confirmed: it stops wearing the queued marker.
+    expect(open.querySelector(`[${NS}-row]`)!.hasAttribute(`${NS}-queued`)).toBe(false);
+  });
+
   it.each(["closed", "open"] as const)(
     "mounts into a %s shadow root and still sees its own UI through the shadow boundary",
     (mode) => {
@@ -1110,6 +1253,152 @@ describe("armed chip motion", () => {
     const picker = make({ transport: fakeTransport(), accent: ACCENT });
     picker.enable();
     expect(query(`[${NS}-chip]`)!.hasAttribute(`${NS}-pulse`)).toBe(true);
+  });
+});
+
+/**
+ * "maybe we also add copy button."
+ *
+ * The author was selecting a note's selector out of the panel by hand to paste
+ * into a chat. What a person pastes there is an instruction, and an instruction
+ * needs both halves: WHERE (the selector, with the component name when there is
+ * one) and WHAT (the note, in full). The note alone has no anchor; the selector
+ * alone is not an ask; the raw entry is a wall of userAgent, viewport and
+ * console noise around the one line that was wanted.
+ */
+describe("a copy control on every note", () => {
+  /** A panel with one saved note in it, and a clipboard that records. */
+  async function panelWithNote(
+    note: string,
+    clipboard?: { writeText?: unknown },
+  ): Promise<{ row: HTMLElement; copy: HTMLButtonElement; entry: FeedbackEntry }> {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport, capture: { componentName: () => "PricingTable" } });
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave(note);
+    picker.disable();
+    transport.listed.push(transport.created[0]!); // the inbox has it now
+
+    // Stubbed AFTER the entry is built: `buildEntry` reads navigator.userAgent,
+    // and the clipboard is read live, at click time, precisely so a page that
+    // gains or loses it mid-life is handled by the same branch.
+    vi.stubGlobal("navigator", { userAgent: "vitest", ...(clipboard ? { clipboard } : {}) });
+
+    const open = await openPanel();
+    const row = open.querySelector<HTMLElement>(`[${NS}-row]`)!;
+    return {
+      row,
+      copy: row.querySelector<HTMLButtonElement>(`[${NS}-copy]`)!,
+      entry: transport.created[0]!,
+    };
+  }
+
+  it("copies where and what, in full, and says that it did", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    const long = `make this ${"much ".repeat(30)}bigger`;
+    const { copy } = await panelWithNote(long, { writeText });
+
+    expect(copy).not.toBeNull();
+    expect(copy.getAttribute("aria-label")).toBe("Copy note");
+    copy.click();
+    await settle();
+
+    // The row truncates at 90 characters for display; the clipboard does not —
+    // a half-copied instruction is worse than none.
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(`<PricingTable> #cta — ${long}`);
+    expect(lastToast()).toBe("Copied the note");
+  });
+
+  it("names the element the same way the row does, component and all", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    const { copy } = await panelWithNote("tighten the spacing", { writeText });
+
+    copy.click();
+    await settle();
+
+    // Exactly what the row shows underneath the note — one line, pasteable.
+    expect(writeText.mock.calls[0]![0]).toBe("<PricingTable> #cta — tighten the spacing");
+  });
+
+  it("does not throw, and does not claim success, when the page has no clipboard", async () => {
+    const { copy } = await panelWithNote("no clipboard here");
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  it("does not throw when the clipboard API exists but refuses", async () => {
+    const writeText = vi.fn(async () => {
+      throw new Error("clipboard needs user activation");
+    });
+    const { copy } = await panelWithNote("a refused copy", { writeText });
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  it("does not throw when the clipboard object is there but writeText is not", async () => {
+    const { copy } = await panelWithNote("half a clipboard", {});
+
+    expect(() => copy.click()).not.toThrow();
+    await settle();
+
+    expect(lastToast()).toBe("Clipboard unavailable");
+  });
+
+  /**
+   * The row layout was fixed once already for exactly this deformation, and
+   * adding a second 24px target beside the first is how it would come back.
+   */
+  it("sits beside delete without crowding it, in the same drawn-icon treatment", async () => {
+    const { row, copy } = await panelWithNote("a note with two controls", {
+      writeText: async () => {},
+    });
+    const del = row.querySelector<HTMLButtonElement>(`[${NS}-del]`)!;
+
+    // Both in one box at the end of the row, so the row's own 8px gap still
+    // separates the text from the controls and only 4px separates the two.
+    const tools = row.querySelector<HTMLElement>(`[${NS}-tools]`)!;
+    expect(tools).not.toBeNull();
+    expect(copy.parentElement).toBe(tools);
+    expect(del.parentElement).toBe(tools);
+    expect(tools.parentElement).toBe(row);
+    // Copy first: it is the harmless one, and the destructive control should
+    // not be the one under the pointer on the way to it.
+    expect([...tools.children]).toEqual([copy, del]);
+    expect(ruleFor(`[${NS}-tools]`)).toContain("display:flex");
+    expect(ruleFor(`[${NS}-tools]`)).toContain("gap:4px");
+
+    // The same disc as delete, declared the same way, for the same reason: a
+    // host page's own `button{padding:…}` must not be able to deform it.
+    const rule = ruleFor(`[${NS}-copy]`);
+    for (const declaration of [
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "box-sizing:border-box",
+      "padding:0",
+      "width:24px",
+      "height:24px",
+    ]) {
+      expect(rule).toContain(declaration);
+    }
+    expect(rule).not.toMatch(/font:|line-height|text-indent|transform|vertical-align/);
+
+    // Drawn, never typeset: no character glyph, no emoji.
+    expect(copy.textContent).toBe("");
+    const mark = copy.querySelector("svg")!;
+    expect(mark.hasAttribute(`${NS}-mark`)).toBe(true);
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expectMarkCentred(mark as unknown as SVGSVGElement);
   });
 });
 

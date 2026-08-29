@@ -73,6 +73,22 @@ const KEEP_VISIBLE = 48;
  * over it the chip moves and the click that follows is swallowed.
  */
 const CLICK_SLOP = 4;
+/**
+ * The geometry every icon button in a note row shares — delete, and now copy.
+ *
+ * `box-sizing` and `padding:0` are load-bearing rather than tidiness: a host
+ * page's own `button{padding:…}` cascades into this UI, and under content-box
+ * that padding widened the disc into an oval with the mark shoved out of it.
+ * 24px is what pinning the box down costs nothing to keep, and it is the floor
+ * WCAG 2.2 sets for a target this shape.
+ *
+ * One constant, two rules: the two controls sit side by side at the end of a
+ * row, so any drift between them is visible as a wobble in the pair.
+ */
+const ICON_BUTTON = `border:0;background:#00000010;color:#1c1c1c;cursor:pointer;
+      flex:none;box-sizing:border-box;padding:0;
+      display:flex;align-items:center;justify-content:center;
+      width:24px;height:24px;border-radius:999px;`;
 
 /** Each selector in a comma list, plus everything inside it. */
 function withDescendants(selectors: string): string {
@@ -297,6 +313,12 @@ export function createPicker(opts: PickerOptions): Picker {
    * inbox AND for an unreachable bridge alike — so hydration must merge them
    * back in rather than trust the listing wholesale. Losing them here would
    * tell the user their note vanished while the transport is still retrying it.
+   *
+   * Seeded from `transport.pending()` at construction, because this Map lives in
+   * picker memory and a page reload builds a new picker with an empty one. The
+   * transport restores its queue from storage, so the notes were never gone —
+   * only the UI's knowledge of them was, and an empty panel after a refresh is
+   * indistinguishable from having lost the lot.
    */
   const unconfirmed = new Map<string, FeedbackEntry>();
   let review: {
@@ -424,25 +446,33 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-row] p b{display:block;font-weight:600;}
     [${NS}-row] p span{display:block;margin-top:2px;color:#00000066;
       font:11px ui-monospace,monospace;word-break:break-all;}
+    /* A note the bridge has not taken yet. Dashed rather than dimmed: it is not
+       a lesser note, it is one still on its way — and after a reload it is the
+       whole of what the panel has, so it must not look disabled. */
+    [${NS}-row][${NS}-queued]{border-style:dashed;border-color:${accent}88;
+      background:${accent}0a;}
+    /* …and the same thing in words, since a border style is not a legend. */
+    [${NS}-waiting]{display:block;margin-top:4px;color:#00000088;
+      font-style:normal;font-weight:600;font-size:11px;}
     /* The chip's claim again, on the other round button. This one used to read
        \`font:600 13px/22px\` around a U+00D7, which is line-height doing the
        centring — and that only lands when the glyph's own ink happens to be
        symmetric about the baseline, which U+00D7's is not. It is a drawn mark
-       now (see \`cross\`), centred by the flex box.
-       \`box-sizing\` and \`padding:0\` are load-bearing, not tidiness: a host
-       page's own \`button{padding:...}\` cascades into this UI, and under
-       content-box that padding was widening the 22px disc into a 28x22 oval
-       with the glyph shoved out of it.
-       24px rather than the 22px this rule used to declare, because pinning the
-       box down is what takes the accidental width away with it: on a page that
-       styles its buttons this was 28 across, and the smallest control in the
-       product should not come out of a centring fix narrower than it went in.
-       24 is also the floor WCAG 2.2 sets for a target this shape. */
-    [${NS}-del]{border:0;background:#00000010;color:#1c1c1c;cursor:pointer;
-      flex:none;box-sizing:border-box;padding:0;
-      display:flex;align-items:center;justify-content:center;
-      width:24px;height:24px;border-radius:999px;}
+       now (see \`cross\`), centred by the flex box. The geometry it stands on
+       lives in \`ICON_BUTTON\`, which the copy control below shares. */
+    [${NS}-del]{${ICON_BUTTON}}
     [${NS}-del]:hover{background:${accent};color:#fff;}
+    /* Copy: the same disc, from the same constant, for the same reason — a
+       second control beside the first is exactly how the deformation this rule
+       was fixed for would come back. Stated as its own rule rather than merged
+       into the selector above so each control's geometry can be read (and
+       asserted) on its own. */
+    [${NS}-copy]{${ICON_BUTTON}}
+    [${NS}-copy]:hover{background:${accent};color:#fff;}
+    /* The row's controls, as one object. The row's own 8px gap then separates
+       the note from the pair, and only these 4px separate the pair — two 24px
+       targets that read as a set instead of crowding each other. */
+    [${NS}-tools]{display:flex;align-items:center;gap:4px;flex:none;}
     /* A row, so the mark and the label are centred as one — and the mark is
        drawn rather than typeset for the same reason the delete cross is. */
     [${NS}-pick]{width:100%;box-sizing:border-box;border:0;cursor:pointer;
@@ -681,6 +711,33 @@ ${CURSOR_CSS}  `;
     updateBadge();
     renderPanel();
   }
+
+  /**
+   * Put the transport's undelivered notes back before anything else happens.
+   *
+   * Synchronous and first, so the badge is right on the paint after a reload
+   * rather than after a round trip to a bridge that — by the very fact these
+   * entries are still queued — is probably not answering. `hydrate()` then
+   * merges the inbox on top and drops whatever the bridge has since confirmed.
+   */
+  function seedUnconfirmed(): void {
+    let queued: FeedbackEntry[];
+    try {
+      // Optional at runtime even though the interface requires it: `transport`
+      // is a public seam, and a hand-written one from an older release must
+      // degrade to today's behaviour rather than throw on construction.
+      queued = typeof transport.pending === "function" ? transport.pending() : [];
+    } catch {
+      return; // a custom transport threw — nothing to restore
+    }
+    for (const entry of queued) {
+      if (entry.id && entry.note) unconfirmed.set(entry.id, entry);
+    }
+    if (unconfirmed.size === 0) return;
+    entries = [...unconfirmed.values()];
+    updateBadge();
+  }
+  seedUnconfirmed();
   void hydrate();
 
   function updateBadge(): void {
@@ -966,6 +1023,26 @@ ${CURSOR_CSS}  `;
   }
 
   /**
+   * Copy. Two sheets, the back one showing as the corner it is behind — the
+   * ordinary copy idiom, and drawn for the same reason the cross beside it is:
+   * a character (U+2398, U+29C9, an emoji) renders as whatever the platform
+   * resolved `system-ui` to, at whatever weight that font happens to have, and
+   * sits wherever its own metrics put it.
+   *
+   * The two paths are read as one mark, so it is their COMBINED extents that
+   * have to be symmetric about the viewBox: 2.8 and 9.2 on both axes, either
+   * side of 6. The front sheet is closed by restating its first point — every
+   * `d` here is absolute `M`/`L` points only, which is what lets the symmetry
+   * be a unit test rather than a screenshot.
+   */
+  function copyMark(): SVGSVGElement {
+    return svgMark(12, 1.5, [
+      "M7.6 2.8L2.8 2.8L2.8 7.6",
+      "M5.2 5.2L9.2 5.2L9.2 9.2L5.2 9.2L5.2 5.2",
+    ]);
+  }
+
+  /**
    * The picker's own mark — the open-centre cross the chip wears, drawn at the
    * size the Pick button needs it.
    */
@@ -1098,18 +1175,46 @@ ${CURSOR_CSS}  `;
     for (const entry of entries) {
       const row = document.createElement("div");
       row.setAttribute(`${NS}-row`, "");
+      // Still ours, not the bridge's. A restored note looks exactly like a saved
+      // one otherwise, and "saved" would be a claim nobody has made yet.
+      const waiting = unconfirmed.has(entry.id);
+      row.toggleAttribute(`${NS}-queued`, waiting);
       const text = document.createElement("p");
       const note = document.createElement("b");
       note.textContent = entry.note.length > 90 ? `${entry.note.slice(0, 90)}…` : entry.note;
       const where = document.createElement("span");
       where.textContent = entry.component ? `<${entry.component}> ${entry.selector}` : entry.selector;
       text.append(note, where);
+      if (waiting) {
+        // In words as well as in colour: the marker has to survive a reader who
+        // cannot tell the dashed border from the solid one.
+        const mark = document.createElement("em");
+        mark.setAttribute(`${NS}-waiting`, "");
+        mark.textContent = "Queued — waiting for the bridge";
+        text.append(mark);
+      }
+      // Copy first, delete second: copy is the harmless one, and the
+      // destructive control should not be the thing under the pointer on the
+      // way to it.
+      const copy = document.createElement("button");
+      copy.setAttribute(`${NS}-copy`, "");
+      copy.setAttribute("aria-label", "Copy note");
+      copy.append(copyMark());
+      copy.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void copyEntry(entry);
+      });
       const del = document.createElement("button");
       del.setAttribute(`${NS}-del`, "");
       del.setAttribute("aria-label", "Delete note");
       del.append(cross());
       del.addEventListener("click", () => void deleteEntry(entry.id));
-      row.append(text, del);
+      // One box for the pair, so the row's own gap keeps separating the note
+      // from the controls rather than the controls from each other.
+      const tools = document.createElement("div");
+      tools.setAttribute(`${NS}-tools`, "");
+      tools.append(copy, del);
+      row.append(text, tools);
       panel.append(row);
     }
 
@@ -1158,6 +1263,51 @@ ${CURSOR_CSS}  `;
       );
       panel.append(actions);
     }
+  }
+
+  /**
+   * What a note is worth pasting into a chat: WHERE, then WHAT.
+   *
+   * The author was selecting the selector out of the panel by hand to paste at
+   * an agent — so the useful unit is the instruction, and an instruction needs
+   * both halves. The note alone has no anchor ("make this bigger" — make WHAT
+   * bigger?); the selector alone is not an ask; the whole entry is a wall of
+   * userAgent, viewport and console noise around the one line that was wanted,
+   * and anything that wants the wall already has `fix ui`.
+   *
+   * Exactly the two lines the row already shows, joined — including the
+   * component name when there is one, because `<PricingTable> #cta` is what a
+   * person searches their codebase for. The note goes in FULL: the row elides
+   * at 90 characters to keep its shape, and a half-copied instruction is worse
+   * than none.
+   */
+  function copyText(entry: FeedbackEntry): string {
+    const where = entry.component ? `<${entry.component}> ${entry.selector}` : entry.selector;
+    return `${where} — ${entry.note}`;
+  }
+
+  /**
+   * Put a note on the clipboard, or say honestly that we could not.
+   *
+   * Feature-detected at CLICK time rather than at construction: `navigator.
+   * clipboard` is absent on an insecure origin and on older engines, and a page
+   * can be either at any point in its life. Nothing here is allowed to throw —
+   * a rejected `writeText` (no user activation, permission denied) is an
+   * ordinary outcome of pressing this button, not an error the host page should
+   * ever see in its console.
+   */
+  async function copyEntry(entry: FeedbackEntry): Promise<void> {
+    let wrote = false;
+    try {
+      const clip = typeof navigator === "undefined" ? undefined : navigator.clipboard;
+      if (clip && typeof clip.writeText === "function") {
+        await clip.writeText(copyText(entry));
+        wrote = true;
+      }
+    } catch {
+      wrote = false; // refused, or no clipboard at all — same story to tell
+    }
+    toast(wrote ? "Copied the note" : "Clipboard unavailable");
   }
 
   async function deleteEntry(id: string): Promise<void> {
@@ -1210,6 +1360,21 @@ ${CURSOR_CSS}  `;
     const component = componentNameOf(el);
     const selector = buildSelector(el);
     return component ? `<${component}> ${selector}` : selector;
+  }
+
+  /**
+   * Take the highlight off the page — the pick it belonged to is finished.
+   *
+   * Picking survives a save now, so a run of notes is a run of picks with
+   * nothing in between to reset the box. Leaving it framing the element that was
+   * just noted is worse than the disarm it replaced: the affordance would be
+   * pointing at the last answer while the user aims at the next question, and it
+   * would sit there until the pointer happened to move.
+   */
+  function clearHighlight(): void {
+    target = null;
+    box.style.display = "none";
+    demote(box);
   }
 
   function highlight(el: Element): void {
@@ -1353,10 +1518,21 @@ ${CURSOR_CSS}  `;
     entries.push(entry);
     review?.entryIds.push(entry.id);
     if (!result.ok) unconfirmed.set(entry.id, entry); // queued: the inbox hasn't got it yet
+    // A saved note ends the PICK, not the picking. Nothing here calls
+    // `disable()`: leaving several notes is the ordinary case (it is the whole
+    // gesture a session is built around), and standing the picker down after
+    // each one made the human re-arm to say the thing they had already said.
+    // The ways out are unchanged and all deliberate — Escape, the chip, and
+    // `disable()`. Only the highlight is reset, so the next pick starts clean.
+    clearHighlight();
     updateBadge();
     renderPanel();
     if (result.ok) {
-      toast(`Saved (${entries.length}) — tap ✛ to review`);
+      // Not "tap ✛ to review" any more. The picker is still armed, and the
+      // chip's first click while armed stands it down — so that advice was the
+      // disarm-on-save wearing a different hat, spending two clicks and a
+      // re-arm on a user who was about to point at the next thing.
+      toast(`Saved (${entries.length}) — keep picking, or Esc to stop`);
       opts.onSaved?.(entry);
     } else if (result.error !== undefined) {
       // The endpoint answered and said why (an unwritable inbox names the path
@@ -1510,8 +1686,7 @@ ${CURSOR_CSS}  `;
     window.removeEventListener("keydown", onKey, true);
     for (const type of SUPPRESSED) window.removeEventListener(type, suppress, true);
     document.documentElement.removeAttribute(ARMED);
-    box.style.display = "none";
-    demote(box);
+    clearHighlight();
     chip?.removeAttribute("data-on");
     paintChip();
     closePopover();
