@@ -79,10 +79,13 @@ test("every mark sits dead centre in the control that draws it", async ({
   await page.locator(CHIP).click();
   await page.locator(PICK).click();
   await pickAndNote(page, "#save-btn", "a note, so there is a row to delete");
-  // The picker is still armed after a save — the first click stands it down,
-  // the second opens the notes panel.
+  // The picker is still armed after a save — that is the point of it — so the
+  // first click stands it down and the second opens the notes panel. Two
+  // clicks, deterministically: the armed state is now something the suite
+  // asserts rather than something it works around.
   await page.locator(CHIP).click();
-  if ((await page.locator(PANEL).count()) === 0) await page.locator(CHIP).click();
+  await expect(page.locator(PANEL)).toHaveCount(0);
+  await page.locator(CHIP).click();
   await expect(page.locator(PANEL)).toHaveCount(1);
   await expect(page.locator(DEL)).toHaveCount(1);
 

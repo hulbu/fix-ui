@@ -1265,6 +1265,21 @@ ${CURSOR_CSS}  `;
     return component ? `<${component}> ${selector}` : selector;
   }
 
+  /**
+   * Take the highlight off the page — the pick it belonged to is finished.
+   *
+   * Picking survives a save now, so a run of notes is a run of picks with
+   * nothing in between to reset the box. Leaving it framing the element that was
+   * just noted is worse than the disarm it replaced: the affordance would be
+   * pointing at the last answer while the user aims at the next question, and it
+   * would sit there until the pointer happened to move.
+   */
+  function clearHighlight(): void {
+    target = null;
+    box.style.display = "none";
+    demote(box);
+  }
+
   function highlight(el: Element): void {
     const r = el.getBoundingClientRect();
     box.style.display = "block";
@@ -1406,10 +1421,21 @@ ${CURSOR_CSS}  `;
     entries.push(entry);
     review?.entryIds.push(entry.id);
     if (!result.ok) unconfirmed.set(entry.id, entry); // queued: the inbox hasn't got it yet
+    // A saved note ends the PICK, not the picking. Nothing here calls
+    // `disable()`: leaving several notes is the ordinary case (it is the whole
+    // gesture a session is built around), and standing the picker down after
+    // each one made the human re-arm to say the thing they had already said.
+    // The ways out are unchanged and all deliberate — Escape, the chip, and
+    // `disable()`. Only the highlight is reset, so the next pick starts clean.
+    clearHighlight();
     updateBadge();
     renderPanel();
     if (result.ok) {
-      toast(`Saved (${entries.length}) — tap ✛ to review`);
+      // Not "tap ✛ to review" any more. The picker is still armed, and the
+      // chip's first click while armed stands it down — so that advice was the
+      // disarm-on-save wearing a different hat, spending two clicks and a
+      // re-arm on a user who was about to point at the next thing.
+      toast(`Saved (${entries.length}) — keep picking, or Esc to stop`);
       opts.onSaved?.(entry);
     } else if (result.error !== undefined) {
       // The endpoint answered and said why (an unwritable inbox names the path
@@ -1563,8 +1589,7 @@ ${CURSOR_CSS}  `;
     window.removeEventListener("keydown", onKey, true);
     for (const type of SUPPRESSED) window.removeEventListener(type, suppress, true);
     document.documentElement.removeAttribute(ARMED);
-    box.style.display = "none";
-    demote(box);
+    clearHighlight();
     chip?.removeAttribute("data-on");
     paintChip();
     closePopover();

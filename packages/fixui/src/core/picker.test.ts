@@ -338,6 +338,90 @@ describe("createPicker", () => {
     expect(lastToast()).toContain("Saved (1)");
   });
 
+  /**
+   * "after clicking 'save note' I have to click select picker once again…
+   * would be great if selector would be by default."
+   *
+   * Leaving several notes is the normal case, not the exception — a session is
+   * built around exactly that gesture. Re-arming between every one of them is
+   * three extra clicks for three notes, all of them saying the thing the user
+   * has already said. So a save no longer stands the picker down; only the ways
+   * out a person actually reaches for do (below).
+   */
+  it("stays armed after a saved note, so the next element can be picked straight away", async () => {
+    document.body.innerHTML = `<button id="one">One</button><button id="two">Two</button>`;
+    const transport = fakeTransport();
+    const picker = make({ transport });
+
+    picker.enable();
+    clickSequence(query("#one")!);
+    await typeAndSave("the first note");
+
+    expect(picker.active).toBe(true);
+    // The crosshair is still on, which is the affordance saying so.
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(true);
+    expect(query(`[${NS}-chip]`)!.hasAttribute("data-on")).toBe(true);
+
+    // Nothing of the finished pick is left lying around: no popover to click
+    // through, and no highlight box still framing the element just noted.
+    expect(query(`[${NS}-pop]`)).toBeNull();
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
+
+    // …and the next pick works with no re-arming in between.
+    clickSequence(query("#two")!);
+    expect(query(`[${NS}-pop]`)).not.toBeNull();
+    expect(query(`[${NS}-tag]`)!.textContent).toContain("#two");
+    await typeAndSave("the second note");
+
+    expect(transport.created.map((entry) => entry.selector)).toEqual(["#one", "#two"]);
+    expect(picker.active).toBe(true);
+
+    // …and the toast no longer sends an armed user to the chip, whose first
+    // click while armed is the disarm this test exists to remove.
+    expect(lastToast()).toContain("Saved (2)");
+    expect(lastToast()).not.toContain("✛");
+  });
+
+  it("still stands down for Escape, for the chip, and for disable()", async () => {
+    document.body.innerHTML = `<button id="cta">Continue</button>`;
+    const picker = make({ transport: fakeTransport() });
+
+    // Escape, with a note half-written: the first press drops the popover, the
+    // second stands the picker down. Both survive the save no longer doing it.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    expect(query(`[${NS}-pop]`)).not.toBeNull();
+    const escape = (): void => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    };
+    escape();
+    expect(query(`[${NS}-pop]`)).toBeNull();
+    expect(picker.active).toBe(true);
+    escape();
+    expect(picker.active).toBe(false);
+    expect(document.documentElement.hasAttribute(`${NS}-armed`)).toBe(false);
+
+    // The chip, after a save — the toast's own advice, and the one that used to
+    // be the only way back to an unarmed picker.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note, then the chip");
+    expect(picker.active).toBe(true);
+    query(`[${NS}-chip]`)!.click();
+    expect(picker.active).toBe(false);
+    expect(panel()).toBeNull(); // the first click disarms; it does not open the panel
+
+    // …and the programmatic way out, which the adapters use.
+    picker.enable();
+    clickSequence(query("#cta")!);
+    await typeAndSave("a note, then disable()");
+    picker.disable();
+    expect(picker.active).toBe(false);
+    expect(query(`[${NS}-box]`)!.style.display).toBe("none");
+  });
+
   it("re-homes UI into a dialog when its open attribute appears, and back to mount when it closes", async () => {
     document.body.innerHTML = `<dialog id="modal"><button id="buy">Buy</button></dialog>`;
     const dialog = query("#modal")!;

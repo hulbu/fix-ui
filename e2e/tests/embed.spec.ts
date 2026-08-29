@@ -1,4 +1,14 @@
-import { armPicker, CHIP, expect, openFixture, pickAndNote, test } from "../helpers/fixui";
+import {
+  armPicker,
+  BOX,
+  CHIP,
+  expect,
+  openFixture,
+  PANEL,
+  pickAndNote,
+  POP,
+  test,
+} from "../helpers/fixui";
 
 /**
  * The npm embed against a real bridge, in a real browser: one pick becomes one
@@ -41,6 +51,48 @@ test("a picked element becomes one v1 entry in the project inbox", async ({
   const consoleErrors = entry!.consoleErrors as { message: string; count: number }[];
   expect(consoleErrors.map((error) => error.message)).toContain(
     "PricingCard: failed to load pricing data",
+  );
+});
+
+/**
+ * "after clicking 'save note' I have to click select picker once again."
+ *
+ * Three notes used to cost three trips back through the chip and the panel.
+ * Measured where it is felt: the crosshair the browser actually resolves, and a
+ * second pick driven with nothing but a click on the next element.
+ */
+test("picking survives a saved note — the next element is one click away", async ({
+  page,
+  baseURL,
+  bridge,
+}) => {
+  await openFixture(page, baseURL!, "basic.html", bridge);
+  await armPicker(page);
+  await pickAndNote(page, "#save-btn", "Primary button should be brand blue");
+
+  // Still armed, and the page still says so — same evidence the crosshair spec
+  // below trusts, and neither the panel nor the chip was touched to get here.
+  await expect(page.locator(PANEL)).toHaveCount(0);
+  await expect
+    .poll(() => page.locator("body").evaluate((el) => getComputedStyle(el).cursor))
+    .toBe("crosshair");
+  // …and the highlight is not still framing the element that was just noted.
+  await expect(page.locator(BOX)).toBeHidden();
+
+  // One click on the next element, with no re-arming in between.
+  await pickAndNote(page, "#cancel-btn", "Cancel reads as the primary action");
+  await expect(page.locator(POP)).toHaveCount(0);
+
+  await expect.poll(async () => (await bridge.entries()).length).toBe(2);
+  expect((await bridge.entries()).map((entry) => entry.selector)).toEqual([
+    "#save-btn",
+    "#cancel-btn",
+  ]);
+
+  // Escape is still the way out, and it is the one the toast now names.
+  await page.keyboard.press("Escape");
+  await expect.poll(() => page.locator("body").evaluate((el) => getComputedStyle(el).cursor)).toBe(
+    "auto",
   );
 });
 
