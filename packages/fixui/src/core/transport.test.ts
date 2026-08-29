@@ -146,6 +146,47 @@ describe("createTransport", () => {
     });
   });
 
+  /**
+   * The count was never enough.
+   *
+   * `onQueueChange` says HOW MANY entries are undelivered; the picker needs to
+   * know WHICH, because after a reload its own memory of them is gone and the
+   * only surviving copy is the one this transport restored from storage. Without
+   * an enumeration the panel comes back empty and the user reads that as "my
+   * notes were lost" — they were not, they are right here.
+   */
+  it("enumerates the entries it is still holding, restored from storage across a reload", async () => {
+    const a = makeEntry({ id: "a" });
+    const b = makeEntry({ id: "b" });
+    const storage = createFakeStorage({ [QUEUE_KEY]: JSON.stringify([a, b]) });
+    const fetchImpl = failingFetch();
+    // A brand new transport over the same storage — this IS the page reload.
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage });
+
+    expect(transport.pending()).toEqual([a, b]);
+
+    // A copy, not the queue itself: a caller mutating what it was handed must
+    // not be able to un-queue a note that is still on its way.
+    transport.pending().length = 0;
+    expect(transport.pending()).toHaveLength(2);
+
+    // …and it empties as the bridge takes them.
+    fetchImpl.mockImplementation(async () => jsonResponse({ ok: true }));
+    await transport.flush();
+    expect(transport.pending()).toEqual([]);
+  });
+
+  it("has nothing pending when nothing is queued, and lists an entry the moment it is", async () => {
+    const fetchImpl = failingFetch();
+    const transport = make({ endpoint: ENDPOINT, fetchImpl, storage: createFakeStorage() });
+
+    expect(transport.pending()).toEqual([]);
+
+    const entry = makeEntry();
+    await transport.create(entry);
+    expect(transport.pending()).toEqual([entry]);
+  });
+
   it("retries the queue with exponential backoff 1s, 2s, 4s … capped at 30s", async () => {
     const fetchImpl = failingFetch();
     const storage = createFakeStorage();

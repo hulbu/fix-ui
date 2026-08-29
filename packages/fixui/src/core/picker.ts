@@ -297,6 +297,12 @@ export function createPicker(opts: PickerOptions): Picker {
    * inbox AND for an unreachable bridge alike — so hydration must merge them
    * back in rather than trust the listing wholesale. Losing them here would
    * tell the user their note vanished while the transport is still retrying it.
+   *
+   * Seeded from `transport.pending()` at construction, because this Map lives in
+   * picker memory and a page reload builds a new picker with an empty one. The
+   * transport restores its queue from storage, so the notes were never gone —
+   * only the UI's knowledge of them was, and an empty panel after a refresh is
+   * indistinguishable from having lost the lot.
    */
   const unconfirmed = new Map<string, FeedbackEntry>();
   let review: {
@@ -424,6 +430,14 @@ export function createPicker(opts: PickerOptions): Picker {
     [${NS}-row] p b{display:block;font-weight:600;}
     [${NS}-row] p span{display:block;margin-top:2px;color:#00000066;
       font:11px ui-monospace,monospace;word-break:break-all;}
+    /* A note the bridge has not taken yet. Dashed rather than dimmed: it is not
+       a lesser note, it is one still on its way — and after a reload it is the
+       whole of what the panel has, so it must not look disabled. */
+    [${NS}-row][${NS}-queued]{border-style:dashed;border-color:${accent}88;
+      background:${accent}0a;}
+    /* …and the same thing in words, since a border style is not a legend. */
+    [${NS}-waiting]{display:block;margin-top:4px;color:#00000088;
+      font-style:normal;font-weight:600;font-size:11px;}
     /* The chip's claim again, on the other round button. This one used to read
        \`font:600 13px/22px\` around a U+00D7, which is line-height doing the
        centring — and that only lands when the glyph's own ink happens to be
@@ -681,6 +695,33 @@ ${CURSOR_CSS}  `;
     updateBadge();
     renderPanel();
   }
+
+  /**
+   * Put the transport's undelivered notes back before anything else happens.
+   *
+   * Synchronous and first, so the badge is right on the paint after a reload
+   * rather than after a round trip to a bridge that — by the very fact these
+   * entries are still queued — is probably not answering. `hydrate()` then
+   * merges the inbox on top and drops whatever the bridge has since confirmed.
+   */
+  function seedUnconfirmed(): void {
+    let queued: FeedbackEntry[];
+    try {
+      // Optional at runtime even though the interface requires it: `transport`
+      // is a public seam, and a hand-written one from an older release must
+      // degrade to today's behaviour rather than throw on construction.
+      queued = typeof transport.pending === "function" ? transport.pending() : [];
+    } catch {
+      return; // a custom transport threw — nothing to restore
+    }
+    for (const entry of queued) {
+      if (entry.id && entry.note) unconfirmed.set(entry.id, entry);
+    }
+    if (unconfirmed.size === 0) return;
+    entries = [...unconfirmed.values()];
+    updateBadge();
+  }
+  seedUnconfirmed();
   void hydrate();
 
   function updateBadge(): void {
@@ -1098,12 +1139,24 @@ ${CURSOR_CSS}  `;
     for (const entry of entries) {
       const row = document.createElement("div");
       row.setAttribute(`${NS}-row`, "");
+      // Still ours, not the bridge's. A restored note looks exactly like a saved
+      // one otherwise, and "saved" would be a claim nobody has made yet.
+      const waiting = unconfirmed.has(entry.id);
+      row.toggleAttribute(`${NS}-queued`, waiting);
       const text = document.createElement("p");
       const note = document.createElement("b");
       note.textContent = entry.note.length > 90 ? `${entry.note.slice(0, 90)}…` : entry.note;
       const where = document.createElement("span");
       where.textContent = entry.component ? `<${entry.component}> ${entry.selector}` : entry.selector;
       text.append(note, where);
+      if (waiting) {
+        // In words as well as in colour: the marker has to survive a reader who
+        // cannot tell the dashed border from the solid one.
+        const mark = document.createElement("em");
+        mark.setAttribute(`${NS}-waiting`, "");
+        mark.textContent = "Queued — waiting for the bridge";
+        text.append(mark);
+      }
       const del = document.createElement("button");
       del.setAttribute(`${NS}-del`, "");
       del.setAttribute("aria-label", "Delete note");

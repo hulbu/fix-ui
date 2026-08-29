@@ -13,10 +13,17 @@ import type { Transport } from "./transport.js";
 const NS = "data-uifb";
 const UI = `[${NS}],[${NS}-box],[${NS}-chip],[${NS}-pop],[${NS}-panel],[${NS}-toast]`;
 
-type FakeTransport = Transport & { created: FeedbackEntry[]; listed: FeedbackEntry[] };
+type FakeTransport = Transport & {
+  created: FeedbackEntry[];
+  listed: FeedbackEntry[];
+  /** What the transport is still holding — what it restored from storage. */
+  queued: FeedbackEntry[];
+};
 
 function fakeTransport(
   result: { ok: boolean; queued: boolean; error?: string } = { ok: true, queued: false },
+  /** Seeded, as a real transport seeds itself from storage at construction. */
+  queued: FeedbackEntry[] = [],
 ): FakeTransport {
   const created: FeedbackEntry[] = [];
   /** What the bridge inbox reports — [] both when empty and when unreachable. */
@@ -24,13 +31,16 @@ function fakeTransport(
   return {
     created,
     listed,
+    queued,
     create: vi.fn(async (entry: FeedbackEntry) => {
       created.push(entry);
+      if (!result.ok && result.queued) queued.push(entry);
       return result;
     }),
     list: vi.fn(async () => [...listed]),
     remove: vi.fn(async () => true),
     flush: vi.fn(async () => {}),
+    pending: vi.fn(() => [...queued]),
     destroy: vi.fn(),
   };
 }
@@ -844,6 +854,54 @@ describe("createPicker", () => {
 
     expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
     expect(query(`[${NS}-panel]`)!.querySelectorAll(`[${NS}-row]`).length).toBe(1);
+  });
+
+  /**
+   * The reported data loss, which was never a data loss: "after refresh of
+   * website I lost all comments."
+   *
+   * A reload builds a NEW picker, so everything it remembered about notes the
+   * bridge had not taken yet is gone. The transport restores those from storage
+   * and keeps retrying them — the notes are safe — but it used to publish only a
+   * COUNT, so the picker had nothing to put back on screen. An empty panel over
+   * a full queue is the same "no silent drops" failure as the hydrate() bug, one
+   * seam along: the UI reporting a loss that did not happen.
+   */
+  it("restores entries queued before a reload into the panel and the badge, marked as queued", async () => {
+    const queued = [inboxEntry("q1", "queued before the reload")];
+    // A fresh picker over a transport that came up holding the same queue —
+    // this is the page reload, and the inbox is still empty (bridge down).
+    const picker = make({ transport: fakeTransport({ ok: false, queued: true }, queued) });
+    await settle();
+
+    // The badge counts them the moment the picker is built — before any panel
+    // is opened, and without waiting on a bridge that is not there.
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+
+    const open = await openPanel();
+    const rows = open.querySelectorAll(`[${NS}-row]`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("queued before the reload");
+    // …and they do not pass themselves off as notes the bridge already has.
+    expect(rows[0]!.hasAttribute(`${NS}-queued`)).toBe(true);
+    expect(rows[0]!.textContent).toContain("Queued");
+    expect(picker.active).toBe(false); // restoring notes arms nothing
+  });
+
+  it("shows a restored entry once, not twice, once the bridge confirms it", async () => {
+    const entry = inboxEntry("q1", "queued before the reload");
+    const transport = fakeTransport({ ok: false, queued: true }, [entry]);
+    make({ transport });
+    await settle();
+
+    // The transport flushed while the page was up: the inbox reports it now.
+    transport.listed.push(entry);
+    const open = await openPanel();
+
+    expect(open.querySelectorAll(`[${NS}-row]`)).toHaveLength(1);
+    expect(query(`[${NS}-badge]`)!.textContent).toBe("1");
+    // Confirmed is confirmed: it stops wearing the queued marker.
+    expect(open.querySelector(`[${NS}-row]`)!.hasAttribute(`${NS}-queued`)).toBe(false);
   });
 
   it.each(["closed", "open"] as const)(
